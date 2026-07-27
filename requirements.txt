@@ -1,0 +1,5 @@
+# Command Vault has no runtime dependencies beyond the Python standard
+# library + Tk (install python3-tk via your OS package manager on Linux).
+#
+# The following is only needed to build standalone binaries:
+pyinstaller

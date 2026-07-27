@@ -1,0 +1,99 @@
+name: Build Releases
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch: {}
+
+jobs:
+  build-linux-appimage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-tk
+
+      - name: Install PyInstaller
+        run: pip install pyinstaller
+
+      - name: Build binary with PyInstaller
+        run: |
+          pyinstaller --onefile --windowed --name CommandVault --icon packaging/icon.ico main.py
+
+      - name: Assemble AppDir
+        run: |
+          mkdir -p CommandVault.AppDir/usr/bin
+          cp dist/CommandVault CommandVault.AppDir/usr/bin/
+          cp packaging/icon.png CommandVault.AppDir/command-vault.png
+          cp packaging/command-vault.desktop CommandVault.AppDir/command-vault.desktop
+          cat > CommandVault.AppDir/AppRun << 'EOF'
+          #!/bin/bash
+          HERE="$(dirname "$(readlink -f "${0}")")"
+          export PATH="${HERE}/usr/bin:${PATH}"
+          exec "${HERE}/usr/bin/CommandVault" "$@"
+          EOF
+          chmod +x CommandVault.AppDir/AppRun CommandVault.AppDir/usr/bin/CommandVault
+
+      - name: Download appimagetool
+        run: |
+          wget -q "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage" -O appimagetool
+          chmod +x appimagetool
+
+      - name: Build AppImage
+        run: |
+          ./appimagetool --appimage-extract-and-run CommandVault.AppDir CommandVault-x86_64.AppImage
+
+      - name: Upload AppImage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CommandVault-Linux-AppImage
+          path: CommandVault-x86_64.AppImage
+
+  build-windows-exe:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PyInstaller
+        run: pip install pyinstaller
+
+      - name: Build exe with PyInstaller
+        run: |
+          pyinstaller --onefile --windowed --name CommandVault --icon packaging/icon.ico main.py
+
+      - name: Upload exe artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CommandVault-Windows-exe
+          path: dist/CommandVault.exe
+
+  release:
+    needs: [build-linux-appimage, build-windows-exe]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/CommandVault-Linux-AppImage/CommandVault-x86_64.AppImage
+            artifacts/CommandVault-Windows-exe/CommandVault.exe

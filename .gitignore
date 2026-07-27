@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+
+# PyInstaller
+build/
+dist/
+*.spec
+
+# AppImage build artifacts
+*.AppDir/
+*.AppImage
+appimagetool
+
+# Local data (shouldn't be in the repo; data lives in the OS app-data folder anyway)
+commands.json
+config.json
+
+# OS/editor cruft
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
