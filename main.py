@@ -8,8 +8,29 @@ import re
 import platform
 import subprocess
 import uuid
-
 import shutil
+import threading
+import queue
+import shlex
+from datetime import datetime
+
+try:
+    from pynput import keyboard as pynput_keyboard
+    HAVE_PYNPUT = True
+except Exception:
+    HAVE_PYNPUT = False
+
+try:
+    from PIL import Image as PILImage, ImageDraw as PILImageDraw
+    HAVE_PIL = True
+except Exception:
+    HAVE_PIL = False
+
+try:
+    import pystray
+    HAVE_PYSTRAY = HAVE_PIL
+except Exception:
+    HAVE_PYSTRAY = False
 
 APP_NAME = "Command Vault"
 
@@ -172,7 +193,26 @@ def windows_startup_dir():
 
 
 def app_relaunch_command():
-    """Command used to relaunch Command Vault itself."""
+    """Command used to relaunch Command Vault itself. Has to handle three
+    very different cases correctly, or autostart silently does nothing:
+
+    1. Running inside an AppImage: sys.executable points at a path inside
+       a temporary mount (/tmp/.mount_XXXXXX/...) that AppImage creates
+       fresh on every launch and deletes on exit -- that path is gone by
+       the next boot. AppImage's runtime sets $APPIMAGE to the *actual*,
+       stable path of the .AppImage file itself, so we use that instead.
+    2. Running as any other frozen PyInstaller binary (Windows .exe, a
+       plain Linux binary, a macOS .app) -- sys.executable IS the program,
+       so it should be run directly, not wrapped as a script argument.
+    3. Running from source via `python main.py` -- the original behavior.
+    """
+    appimage_path = os.environ.get("APPIMAGE")
+    if appimage_path:
+        return f'"{appimage_path}"'
+
+    if getattr(sys, "frozen", False):
+        return f'"{sys.executable}"'
+
     script = os.path.abspath(sys.argv[0])
     py = sys.executable
     if is_windows():
@@ -210,6 +250,7 @@ def set_app_autostart(enabled):
             "Name=Command Vault\n"
             f"Exec={app_relaunch_command()}\n"
             "X-GNOME-Autostart-enabled=true\n"
+            "X-GNOME-Autostart-Delay=5\n"
         )
         with open(path, "w") as f:
             f.write(content)
@@ -385,6 +426,8 @@ def load_data():
         cmd.setdefault("category", UNCATEGORIZED)
         cmd.setdefault("icon", DEFAULT_ICON)
         cmd.setdefault("autostart", False)
+        cmd.setdefault("hotkey_display", "")
+        cmd.setdefault("hotkey_pynput", "")
     return raw
 
 
@@ -399,6 +442,8 @@ def _blank_entry(name="", command=""):
         "category": UNCATEGORIZED,
         "icon": DEFAULT_ICON,
         "autostart": False,
+        "hotkey_display": "",
+        "hotkey_pynput": "",
     }
 
 
@@ -445,6 +490,93 @@ def resolve_exec_command(command):
 
 
 
+# ---------------------------------------------------------------------------
+# Templated commands: {{name}} or {{name:default}} prompts for a value each run
+# ---------------------------------------------------------------------------
+PLACEHOLDER_RE = re.compile(r"\{\{(\w+)(?::([^}]*))?\}\}")
+
+
+def extract_placeholders(command):
+    """Returns an ordered list of (name, default) for each unique {{name}}
+    or {{name:default}} found in the command."""
+    seen = {}
+    order = []
+    for m in PLACEHOLDER_RE.finditer(command):
+        name, default = m.group(1), m.group(2) or ""
+        if name not in seen:
+            seen[name] = default
+            order.append(name)
+    return [(name, seen[name]) for name in order]
+
+
+def fill_placeholders(command, values):
+    def repl(m):
+        name = m.group(1)
+        return values.get(name, m.group(0))
+    return PLACEHOLDER_RE.sub(repl, command)
+
+
+class PlaceholderDialog(tk.Toplevel):
+    """Prompts for {{name}} values before running a templated command."""
+    def __init__(self, entry_name, placeholders):
+        super().__init__()
+        self.result = None
+        self.title(f"Run: {entry_name}")
+        self.configure(bg=COLOR_BG)
+        self.resizable(False, False)
+        self.grab_set()
+
+        tk.Label(self, text=f'Fill in values to run "{entry_name}"', bg=COLOR_BG, fg=COLOR_TEXT,
+                 font=FONT_HEADING, wraplength=340, justify="left").pack(anchor="w", padx=16, pady=(16, 10))
+
+        self.vars = {}
+        first_entry = None
+        for name, default in placeholders:
+            tk.Label(self, text=name, bg=COLOR_BG, fg=COLOR_SUBTEXT, font=FONT_SMALL, anchor="w"
+                      ).pack(fill="x", padx=16)
+            var = tk.StringVar(value=default)
+            entry = tk.Entry(self, textvariable=var, width=42, font=FONT_NORMAL, bg=COLOR_PANEL,
+                              fg=COLOR_TEXT, insertbackground=COLOR_TEXT, relief="flat")
+            entry.pack(fill="x", padx=16, pady=(2, 8))
+            entry.bind("<Return>", lambda e: self._confirm())
+            self.vars[name] = var
+            if first_entry is None:
+                first_entry = entry
+
+        btn_frame = tk.Frame(self, bg=COLOR_BG)
+        btn_frame.pack(fill="x", padx=16, pady=(4, 16))
+        tk.Button(btn_frame, text="Cancel", command=self._cancel, bg=COLOR_PANEL, fg=COLOR_TEXT,
+                  relief="flat", padx=14, pady=4).pack(side="right")
+        tk.Button(btn_frame, text="Run", command=self._confirm, bg=COLOR_GREEN, fg=COLOR_SIDEBAR,
+                  relief="flat", padx=14, pady=4, font=("Segoe UI", 10, "bold")).pack(side="right", padx=(0, 8))
+
+        if first_entry:
+            first_entry.focus_set()
+            first_entry.select_range(0, tk.END)
+
+    def _confirm(self):
+        self.result = {name: var.get() for name, var in self.vars.items()}
+        self.destroy()
+
+    def _cancel(self):
+        self.result = None
+        self.destroy()
+
+
+# ---------------------------------------------------------------------------
+# Terminal selection: auto-detect, or a user-chosen/custom preference
+# ---------------------------------------------------------------------------
+NAMED_LINUX_TERMINALS = {
+    "GNOME Terminal": lambda cmd: ["gnome-terminal", "--", "bash", "-c", cmd + "; exec bash"],
+    "Konsole": lambda cmd: ["konsole", "-e", "bash", "-c", cmd + "; exec bash"],
+    "Xfce Terminal": lambda cmd: ["xfce4-terminal", "-e", "bash", "-c", cmd + "; exec bash"],
+    "COSMIC Terminal": lambda cmd: ["cosmic-term", "-e", "bash", "-c", cmd + "; exec bash"],
+    "xterm": lambda cmd: ["xterm", "-e", "bash", "-c", cmd + "; exec bash"],
+    "Alacritty": lambda cmd: ["alacritty", "-e", "bash", "-c", cmd + "; exec bash"],
+    "kitty": lambda cmd: ["kitty", "bash", "-c", cmd + "; exec bash"],
+    "Terminator": lambda cmd: ["terminator", "-x", "bash", "-c", cmd + "; exec bash"],
+}
+
 TERMINAL_BUILDERS = [
     lambda cmd: ["cosmic-term", "-e", "bash", "-c", cmd + "; exec bash"],
     lambda cmd: ["gnome-terminal", "--", "bash", "-c", cmd + "; exec bash"],
@@ -455,15 +587,56 @@ TERMINAL_BUILDERS = [
 ]
 
 
-def run_entry(entry):
+def custom_terminal_builder(template):
+    def build(cmd):
+        filled = template.replace("%CMD%", cmd)
+        return shlex.split(filled)
+    return build
+
+
+def get_terminal_builders():
+    """Preferred terminal first (if configured), falling back to the full
+    auto-detect list either way, for robustness."""
+    cfg = _load_config()
+    pref = cfg.get("preferred_terminal", "auto")
+    builders = []
+    if pref == "custom":
+        template = cfg.get("custom_terminal_template", "").strip()
+        if template:
+            builders.append(custom_terminal_builder(template))
+    elif pref in NAMED_LINUX_TERMINALS:
+        builders.append(NAMED_LINUX_TERMINALS[pref])
+    builders.extend(TERMINAL_BUILDERS)
+    return builders
+
+
+def run_entry(entry, log=None):
+    """Runs an entry. `log`, if given, is called with short status strings
+    for the console panel -- e.g. the resolved command, working dir, and
+    (for silent mode) live output as it's produced."""
+    def emit(msg):
+        if log:
+            log(msg)
+
     command = entry["command"]
     working_dir = entry.get("working_dir") or None
     run_mode = entry.get("run_mode", "terminal")
     entry_type = entry.get("entry_type", "command")
+    entry_name = entry.get("name", "entry")
 
     if working_dir and not os.path.isdir(working_dir):
         messagebox.showerror("Working directory not found", working_dir)
         return
+
+    if entry_type != "appimage":
+        placeholders = extract_placeholders(command)
+        if placeholders:
+            dialog = PlaceholderDialog(entry_name, placeholders)
+            dialog.wait_window()
+            if dialog.result is None:
+                emit(f'Cancelled "{entry_name}" (values not filled in)')
+                return
+            command = fill_placeholders(command, dialog.result)
 
     if entry_type == "appimage":
         if not os.path.isfile(command):
@@ -477,28 +650,46 @@ def run_entry(entry):
     else:
         exec_cmd = resolve_exec_command(command)
 
+    emit(f'\u25B6 Running "{entry_name}" \u2014 {run_mode} mode' + (f' \u00b7 cwd: {working_dir}' if working_dir else ''))
+    emit(f'  $ {exec_cmd}')
+
     if run_mode == "silent":
         try:
-            subprocess.Popen(
+            proc = subprocess.Popen(
                 exec_cmd,
                 shell=True,
                 cwd=working_dir,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
                 stdin=subprocess.DEVNULL,
                 start_new_session=True,
+                text=True,
+                bufsize=1,
             )
         except Exception as e:
+            emit(f'  \u2717 Failed to launch "{entry_name}": {e}')
             messagebox.showerror("Failed to launch", str(e))
+            return
+
+        if log:
+            def reader():
+                try:
+                    for line in proc.stdout:
+                        log(f'  [{entry_name}] {line.rstrip()}')
+                except Exception:
+                    pass
+            threading.Thread(target=reader, daemon=True).start()
         return
 
-    for builder in TERMINAL_BUILDERS:
+    for builder in get_terminal_builders():
         try:
             subprocess.Popen(builder(exec_cmd), cwd=working_dir)
+            emit(f'  \u2192 Opened in terminal')
             return
         except FileNotFoundError:
             continue
 
+    emit(f'  \u2717 No terminal found for "{entry_name}"')
     messagebox.showerror("No terminal found", "No supported terminal emulator was found on this system.")
 
 
@@ -607,6 +798,52 @@ class AppPicker(tk.Toplevel):
         self.destroy()
 
 
+class InsertPlaceholderDialog(tk.Toplevel):
+    """Small dialog for naming an input box before inserting {{name}} (or
+    {{name:default}}) at the cursor in the command box."""
+    def __init__(self, master, suggested_name):
+        super().__init__(master)
+        self.result = None
+        self.title("Add Input Box")
+        self.configure(bg=COLOR_BG)
+        self.resizable(False, False)
+        self.grab_set()
+
+        tk.Label(self, text="Name", bg=COLOR_BG, fg=COLOR_SUBTEXT, font=FONT_SMALL, anchor="w"
+                  ).pack(fill="x", padx=16, pady=(16, 0))
+        self.name_var = tk.StringVar(value=suggested_name)
+        name_entry = tk.Entry(self, textvariable=self.name_var, width=32, font=FONT_NORMAL, bg=COLOR_PANEL,
+                               fg=COLOR_TEXT, insertbackground=COLOR_TEXT, relief="flat")
+        name_entry.pack(fill="x", padx=16, pady=(2, 8))
+        name_entry.bind("<Return>", lambda e: self._confirm())
+
+        tk.Label(self, text="Default value (optional)", bg=COLOR_BG, fg=COLOR_SUBTEXT, font=FONT_SMALL,
+                  anchor="w").pack(fill="x", padx=16)
+        self.default_var = tk.StringVar()
+        default_entry = tk.Entry(self, textvariable=self.default_var, width=32, font=FONT_NORMAL,
+                                  bg=COLOR_PANEL, fg=COLOR_TEXT, insertbackground=COLOR_TEXT, relief="flat")
+        default_entry.pack(fill="x", padx=16, pady=(2, 12))
+        default_entry.bind("<Return>", lambda e: self._confirm())
+
+        btns = tk.Frame(self, bg=COLOR_BG)
+        btns.pack(fill="x", padx=16, pady=(0, 16))
+        tk.Button(btns, text="Cancel", command=self.destroy, bg=COLOR_PANEL, fg=COLOR_TEXT,
+                  relief="flat", padx=12, pady=4).pack(side="right")
+        tk.Button(btns, text="Insert", command=self._confirm, bg=COLOR_ACCENT, fg=COLOR_SIDEBAR,
+                  relief="flat", font=("Segoe UI", 10, "bold"), padx=12, pady=4).pack(side="right", padx=(0, 8))
+
+        name_entry.focus_set()
+        name_entry.select_range(0, tk.END)
+
+    def _confirm(self):
+        name = self.name_var.get().strip()
+        if not re.fullmatch(r"\w+", name or ""):
+            messagebox.showwarning("Invalid name", "Use letters, numbers, and underscores only (no spaces).")
+            return
+        self.result = (name, self.default_var.get().strip())
+        self.destroy()
+
+
 # ---------------------------------------------------------------------------
 # Add / Edit dialog
 # ---------------------------------------------------------------------------
@@ -682,17 +919,30 @@ class EntryDialog(tk.Toplevel):
         if entry:
             self.command_text.insert("1.0", entry["command"])
 
+        cfg = _load_config()
+        self._placeholder_shortcut = cfg.get("insert_placeholder_tkbind", "<Control-i>")
+        self._placeholder_shortcut_display = cfg.get("insert_placeholder_display", "Ctrl+I")
+        self.command_text.bind(self._placeholder_shortcut, self._add_input_box_event)
+
         browse_frame = tk.Frame(self, bg=COLOR_BG)
         browse_frame.grid(row=6, column=0, columnspan=2, sticky="w", padx=16, pady=(4, 0))
         tk.Button(browse_frame, text="Browse for file...", command=self._browse_command, bg=COLOR_PANEL,
                   fg=COLOR_TEXT, relief="flat", font=FONT_SMALL, padx=8).pack(side="left")
+        tk.Button(browse_frame, text="+ Add Input Box", command=self._add_input_box, bg=COLOR_PANEL,
+                  fg=COLOR_TEXT, relief="flat", font=FONT_SMALL, padx=8).pack(side="left", padx=(6, 0))
         tk.Label(browse_frame, text=".sh / .bat / .ps1 / .py files auto-run with the right interpreter",
                   bg=COLOR_BG, fg=COLOR_SUBTEXT, font=("Segoe UI", 8)).pack(side="left", padx=(8, 0))
 
+        tk.Label(self, text=f"Tip: type {{{{name}}}} or {{{{name:default}}}} yourself, click \"+ Add Input Box\", "
+                             f"or press {self._placeholder_shortcut_display} in the command box \u2014 all three "
+                             f"prompt for a value each time you run this (e.g. git commit -m \"{{{{message:update}}}}\")",
+                  bg=COLOR_BG, fg=COLOR_SUBTEXT, font=("Segoe UI", 8), wraplength=420, justify="left"
+                  ).grid(row=7, column=0, columnspan=2, sticky="w", padx=16, pady=(4, 0))
+
         # Working directory
-        label("Working Directory (optional)").grid(row=7, column=0, columnspan=2, sticky="w", **pad)
+        label("Working Directory (optional)").grid(row=8, column=0, columnspan=2, sticky="w", **pad)
         wd_frame = tk.Frame(self, bg=COLOR_BG)
-        wd_frame.grid(row=8, column=0, columnspan=2, sticky="we", padx=16)
+        wd_frame.grid(row=9, column=0, columnspan=2, sticky="we", padx=16)
         self.wd_var = tk.StringVar(value=entry["working_dir"] if entry else "")
         tk.Entry(wd_frame, textvariable=self.wd_var, width=38, font=FONT_NORMAL, bg=COLOR_PANEL, fg=COLOR_TEXT,
                   insertbackground=COLOR_TEXT, relief="flat").pack(side="left", fill="x", expand=True)
@@ -700,18 +950,18 @@ class EntryDialog(tk.Toplevel):
                   relief="flat", font=FONT_SMALL, padx=8).pack(side="left", padx=(6, 0))
 
         # Category
-        label("Category").grid(row=9, column=0, columnspan=2, sticky="w", **pad)
+        label("Category").grid(row=10, column=0, columnspan=2, sticky="w", **pad)
         self.category_var = tk.StringVar(value=entry["category"] if entry else (categories[0] if categories else UNCATEGORIZED))
         cat_values = categories if categories else [UNCATEGORIZED]
         self.category_combo = ttk.Combobox(self, textvariable=self.category_var, values=cat_values, width=34,
                                             font=FONT_NORMAL)
-        self.category_combo.grid(row=10, column=0, columnspan=2, sticky="we", padx=16)
+        self.category_combo.grid(row=11, column=0, columnspan=2, sticky="we", padx=16)
 
         # Run mode
-        label("Run Mode").grid(row=11, column=0, columnspan=2, sticky="w", **pad)
+        label("Run Mode").grid(row=12, column=0, columnspan=2, sticky="w", **pad)
         self.mode_var = tk.StringVar(value=entry["run_mode"] if entry else "terminal")
         mode_frame = tk.Frame(self, bg=COLOR_BG)
-        mode_frame.grid(row=12, column=0, columnspan=2, sticky="w", padx=16, pady=(0, 4))
+        mode_frame.grid(row=13, column=0, columnspan=2, sticky="w", padx=16, pady=(0, 4))
         tk.Radiobutton(mode_frame, text="Open in Terminal", variable=self.mode_var, value="terminal",
                         bg=COLOR_BG, fg=COLOR_TEXT, selectcolor=COLOR_PANEL, activebackground=COLOR_BG,
                         activeforeground=COLOR_TEXT, font=FONT_SMALL).pack(side="left")
@@ -724,7 +974,7 @@ class EntryDialog(tk.Toplevel):
             value=entry_autostart_enabled(entry["id"]) if entry else False
         )
         autostart_frame = tk.Frame(self, bg=COLOR_BG)
-        autostart_frame.grid(row=13, column=0, columnspan=2, sticky="w", padx=16, pady=(4, 10))
+        autostart_frame.grid(row=14, column=0, columnspan=2, sticky="w", padx=16, pady=(4, 10))
         tk.Checkbutton(autostart_frame, text="Run this automatically when the computer starts",
                         variable=self.autostart_var, bg=COLOR_BG, fg=COLOR_TEXT, selectcolor=COLOR_PANEL,
                         activebackground=COLOR_BG, activeforeground=COLOR_TEXT, font=FONT_SMALL
@@ -734,9 +984,35 @@ class EntryDialog(tk.Toplevel):
                  bg=COLOR_BG, fg=COLOR_SUBTEXT, font=("Segoe UI", 8), wraplength=380, justify="left"
                  ).pack(anchor="w")
 
+        # Launch shortcut (optional, needs pynput)
+        self.entry_hotkey_pynput = entry.get("hotkey_pynput", "") if entry else ""
+        self.entry_hotkey_display_var = tk.StringVar(
+            value=(entry.get("hotkey_display") or "Not set") if entry else "Not set"
+        )
+        if HAVE_PYNPUT:
+            hotkey_frame = tk.Frame(self, bg=COLOR_BG)
+            hotkey_frame.grid(row=15, column=0, columnspan=2, sticky="w", padx=16, pady=(0, 10))
+            tk.Label(hotkey_frame, text="Launch Shortcut (optional)", bg=COLOR_BG, fg=COLOR_SUBTEXT,
+                     font=FONT_SMALL, anchor="w").pack(anchor="w")
+            row = tk.Frame(hotkey_frame, bg=COLOR_BG)
+            row.pack(anchor="w", pady=(2, 0))
+            tk.Label(row, textvariable=self.entry_hotkey_display_var, bg=COLOR_PANEL, fg=COLOR_ACCENT,
+                     font=("Segoe UI", 10, "bold"), padx=8, pady=3).pack(side="left")
+            tk.Button(row, text="Record...", command=self._record_entry_hotkey, bg=COLOR_ACCENT_DIM,
+                      fg=COLOR_TEXT, relief="flat", font=FONT_SMALL, padx=8, pady=3).pack(side="left", padx=(6, 0))
+            tk.Button(row, text="Clear", command=self._clear_entry_hotkey, bg=COLOR_PANEL, fg=COLOR_RED,
+                      relief="flat", font=FONT_SMALL, padx=8, pady=3).pack(side="left", padx=(6, 0))
+            tk.Label(hotkey_frame, text="Runs this specific command from anywhere, even with Command Vault "
+                                         "closed \u2014 needs an X11 session on Linux.",
+                     bg=COLOR_BG, fg=COLOR_SUBTEXT, font=("Segoe UI", 8), wraplength=380, justify="left"
+                     ).pack(anchor="w", pady=(2, 0))
+            buttons_row = 16
+        else:
+            buttons_row = 15
+
         # Buttons
         btn_frame = tk.Frame(self, bg=COLOR_BG)
-        btn_frame.grid(row=14, column=0, columnspan=2, sticky="we", padx=16, pady=(6, 16))
+        btn_frame.grid(row=buttons_row, column=0, columnspan=2, sticky="we", padx=16, pady=(6, 16))
         tk.Button(btn_frame, text="Cancel", command=self._cancel, bg=COLOR_PANEL, fg=COLOR_TEXT,
                   relief="flat", font=FONT_NORMAL, padx=14, pady=4).pack(side="right")
         tk.Button(btn_frame, text="Save", command=self._save, bg=COLOR_ACCENT, fg=COLOR_SIDEBAR,
@@ -744,6 +1020,26 @@ class EntryDialog(tk.Toplevel):
 
         self._sync_command_widget()
         name_entry.focus_set()
+
+    def _record_entry_hotkey(self):
+        dialog = HotkeyRecorderDialog(self)
+        self.wait_window(dialog)
+        if not dialog.result:
+            return
+        display_string, pynput_string, _tk_bind_string = dialog.result
+
+        conflicts = self.master._all_used_hotkeys(exclude_pynput=self.entry_hotkey_pynput or None)
+        if pynput_string in conflicts:
+            messagebox.showwarning("Already in use", f"{display_string} is already assigned to "
+                                                        f"{conflicts[pynput_string]}. Pick a different combo.")
+            return
+
+        self.entry_hotkey_pynput = pynput_string
+        self.entry_hotkey_display_var.set(display_string)
+
+    def _clear_entry_hotkey(self):
+        self.entry_hotkey_pynput = ""
+        self.entry_hotkey_display_var.set("Not set")
 
     def _sync_command_widget(self):
         if self.type_var.get() == "appimage":
@@ -778,6 +1074,27 @@ class EntryDialog(tk.Toplevel):
                 self.type_var.set("appimage")
                 self._sync_command_widget()
 
+    def _add_input_box_event(self, event=None):
+        self._add_input_box()
+        return "break"
+
+    def _add_input_box(self):
+        existing_names = {n for n, _ in extract_placeholders(self.command_text.get("1.0", "end-1c"))}
+        suggested = "value"
+        i = 2
+        while suggested in existing_names:
+            suggested = f"value{i}"
+            i += 1
+
+        dialog = InsertPlaceholderDialog(self, suggested)
+        self.wait_window(dialog)
+        if not dialog.result:
+            return
+        name, default = dialog.result
+        token = "{{" + name + "}}" if not default else "{{" + name + ":" + default + "}}"
+        self.command_text.insert(tk.INSERT, token)
+        self.command_text.focus_set()
+
     def _browse_dir(self):
         path = filedialog.askdirectory(title="Select working directory")
         if path:
@@ -806,6 +1123,8 @@ class EntryDialog(tk.Toplevel):
             "category": category,
             "icon": icon,
             "autostart": bool(self.autostart_var.get()),
+            "hotkey_display": self.entry_hotkey_display_var.get() if self.entry_hotkey_pynput else "",
+            "hotkey_pynput": self.entry_hotkey_pynput,
         }
         self.destroy()
 
@@ -857,8 +1176,214 @@ class SettingsDialog(tk.Toplevel):
         tk.Label(self, text="Existing data moves automatically to the new folder.", bg=COLOR_BG,
                  fg=COLOR_SUBTEXT, font=("Segoe UI", 8)).pack(anchor="w", padx=16, pady=(0, 16))
 
+        if is_linux():
+            tk.Frame(self, bg=COLOR_PANEL, height=1).pack(fill="x", padx=16, pady=(0, 14))
+
+            tk.Label(self, text="Terminal", bg=COLOR_BG, fg=COLOR_TEXT, font=FONT_HEADING
+                     ).pack(anchor="w", padx=16)
+            tk.Label(self, text="Which terminal \"Open in Terminal\" mode uses. Auto-detect tries common "
+                                 "terminals in order; pick one directly if you know what you have installed.",
+                     bg=COLOR_BG, fg=COLOR_SUBTEXT, font=FONT_SMALL, wraplength=360, justify="left"
+                     ).pack(anchor="w", padx=16, pady=(6, 8))
+
+            cfg = _load_config()
+            saved_pref = cfg.get("preferred_terminal", "auto")
+            terminal_options = ["Auto-detect"] + list(NAMED_LINUX_TERMINALS.keys()) + ["Custom command..."]
+            if saved_pref == "auto":
+                initial = "Auto-detect"
+            elif saved_pref == "custom":
+                initial = "Custom command..."
+            elif saved_pref in NAMED_LINUX_TERMINALS:
+                initial = saved_pref
+            else:
+                initial = "Auto-detect"
+
+            self.terminal_var = tk.StringVar(value=initial)
+            terminal_combo = ttk.Combobox(self, textvariable=self.terminal_var, values=terminal_options,
+                                           state="readonly", width=30, font=FONT_NORMAL)
+            terminal_combo.pack(anchor="w", padx=16)
+            terminal_combo.bind("<<ComboboxSelected>>", lambda e: self._sync_custom_template_visibility())
+
+            self.custom_template_var = tk.StringVar(value=cfg.get("custom_terminal_template", ""))
+            self.custom_template_label = tk.Label(self, text="Custom command (use %CMD% where the command goes):",
+                                                    bg=COLOR_BG, fg=COLOR_SUBTEXT, font=FONT_SMALL, anchor="w")
+            self.custom_template_entry = tk.Entry(self, textvariable=self.custom_template_var, width=44,
+                                                    font=("Segoe UI", 9), bg=COLOR_PANEL, fg=COLOR_TEXT,
+                                                    insertbackground=COLOR_TEXT, relief="flat")
+            example = tk.Label(self, text='Example: kitty bash -c "%CMD%; exec bash"',
+                                bg=COLOR_BG, fg=COLOR_SUBTEXT, font=("Segoe UI", 8))
+            self.custom_template_example = example
+
+            self._sync_custom_template_visibility()
+
+            btn_row = tk.Frame(self, bg=COLOR_BG)
+            btn_row.pack(anchor="w", padx=16, pady=(10, 16))
+            tk.Button(btn_row, text="Save", command=self._save_terminal_pref, bg=COLOR_ACCENT, fg=COLOR_SIDEBAR,
+                      relief="flat", font=("Segoe UI", 10, "bold"), padx=12, pady=4).pack(side="left")
+            tk.Button(btn_row, text="Test", command=self._test_terminal, bg=COLOR_PANEL, fg=COLOR_TEXT,
+                      relief="flat", font=FONT_SMALL, padx=12, pady=4).pack(side="left", padx=(8, 0))
+
+        tk.Frame(self, bg=COLOR_PANEL, height=1).pack(fill="x", padx=16, pady=(0, 14))
+
+        tk.Label(self, text="Global Hotkey", bg=COLOR_BG, fg=COLOR_TEXT, font=FONT_HEADING
+                 ).pack(anchor="w", padx=16)
+
+        if not HAVE_PYNPUT:
+            tk.Label(self, text="Install pynput to enable this:\npip install pynput",
+                     bg=COLOR_BG, fg=COLOR_SUBTEXT, font=FONT_SMALL, justify="left"
+                     ).pack(anchor="w", padx=16, pady=(6, 16))
+        else:
+            tray_note = ("with a tray icon to reopen or quit" if HAVE_PYSTRAY else
+                         "by minimizing (install pystray too for a proper tray icon instead)")
+            tk.Label(self, text=f"Press this combo anytime \u2014 even with Command Vault closed \u2014 to bring "
+                                 f"the window back. Closing the window then keeps running in the background "
+                                 f"{tray_note}.",
+                     bg=COLOR_BG, fg=COLOR_SUBTEXT, font=FONT_SMALL, wraplength=360, justify="left"
+                     ).pack(anchor="w", padx=16, pady=(6, 10))
+
+            cfg = _load_config()
+            display = cfg.get("hotkey_display", "Not set")
+            self.hotkey_display_var = tk.StringVar(value=display)
+            tk.Label(self, textvariable=self.hotkey_display_var, bg=COLOR_PANEL, fg=COLOR_ACCENT,
+                     font=("Segoe UI", 11, "bold"), padx=10, pady=6).pack(anchor="w", padx=16, fill="x")
+
+            hk_btn_row = tk.Frame(self, bg=COLOR_BG)
+            hk_btn_row.pack(anchor="w", padx=16, pady=(8, 4))
+            tk.Button(hk_btn_row, text="Record Shortcut...", command=self._record_hotkey, bg=COLOR_ACCENT,
+                      fg=COLOR_SIDEBAR, relief="flat", font=("Segoe UI", 10, "bold"), padx=12, pady=4
+                      ).pack(side="left")
+            tk.Button(hk_btn_row, text="Clear", command=self._clear_hotkey, bg=COLOR_PANEL, fg=COLOR_RED,
+                      relief="flat", font=FONT_SMALL, padx=12, pady=4).pack(side="left", padx=(8, 0))
+            tk.Button(hk_btn_row, text="See All Keybinds", command=self._open_all_keybinds, bg=COLOR_PANEL,
+                      fg=COLOR_TEXT, relief="flat", font=FONT_SMALL, padx=12, pady=4).pack(side="left", padx=(8, 0))
+
+            if is_linux():
+                tk.Label(self, text="Linux note: needs an X11 session. On native Wayland this generally won't "
+                                     "trigger even while Command Vault is open and focused, since Wayland blocks "
+                                     "cross-app input capture by design.",
+                         bg=COLOR_BG, fg=COLOR_SUBTEXT, font=("Segoe UI", 8), wraplength=360, justify="left"
+                         ).pack(anchor="w", padx=16, pady=(4, 16))
+            else:
+                tk.Label(self, text="", bg=COLOR_BG).pack(pady=(0, 4))
+
+        tk.Frame(self, bg=COLOR_PANEL, height=1).pack(fill="x", padx=16, pady=(0, 14))
+
+        tk.Label(self, text="Insert Input Box Shortcut", bg=COLOR_BG, fg=COLOR_TEXT, font=FONT_HEADING
+                 ).pack(anchor="w", padx=16)
+        tk.Label(self, text="Used inside the command box in Add/Edit Entry to insert a {{name}} placeholder "
+                             "at the cursor \u2014 no extra install needed, this works purely within the app.",
+                 bg=COLOR_BG, fg=COLOR_SUBTEXT, font=FONT_SMALL, wraplength=360, justify="left"
+                 ).pack(anchor="w", padx=16, pady=(6, 10))
+
+        ph_cfg = _load_config()
+        ph_display = ph_cfg.get("insert_placeholder_display", "Ctrl+I (default)")
+        self.placeholder_shortcut_display_var = tk.StringVar(value=ph_display)
+        tk.Label(self, textvariable=self.placeholder_shortcut_display_var, bg=COLOR_PANEL, fg=COLOR_ACCENT,
+                 font=("Segoe UI", 11, "bold"), padx=10, pady=6).pack(anchor="w", padx=16, fill="x")
+
+        ph_btn_row = tk.Frame(self, bg=COLOR_BG)
+        ph_btn_row.pack(anchor="w", padx=16, pady=(8, 16))
+        tk.Button(ph_btn_row, text="Record Shortcut...", command=self._record_placeholder_shortcut,
+                  bg=COLOR_ACCENT, fg=COLOR_SIDEBAR, relief="flat", font=("Segoe UI", 10, "bold"), padx=12, pady=4
+                  ).pack(side="left")
+        tk.Button(ph_btn_row, text="Reset to Ctrl+I", command=self._clear_placeholder_shortcut, bg=COLOR_PANEL,
+                  fg=COLOR_TEXT, relief="flat", font=FONT_SMALL, padx=12, pady=4).pack(side="left", padx=(8, 0))
+
         tk.Button(self, text="Close", command=self.destroy, bg=COLOR_PANEL, fg=COLOR_TEXT,
                   relief="flat", padx=14, pady=4).pack(pady=(0, 16))
+
+    def _record_placeholder_shortcut(self):
+        dialog = HotkeyRecorderDialog(self)
+        self.wait_window(dialog)
+        if not dialog.result:
+            return
+        display_string, _pynput_string, tk_bind_string = dialog.result
+        cfg = _load_config()
+        cfg["insert_placeholder_display"] = display_string
+        cfg["insert_placeholder_tkbind"] = tk_bind_string
+        _save_config(cfg)
+        self.placeholder_shortcut_display_var.set(display_string)
+
+    def _clear_placeholder_shortcut(self):
+        cfg = _load_config()
+        cfg.pop("insert_placeholder_display", None)
+        cfg.pop("insert_placeholder_tkbind", None)
+        _save_config(cfg)
+        self.placeholder_shortcut_display_var.set("Ctrl+I (default)")
+
+    def _record_hotkey(self):
+        dialog = HotkeyRecorderDialog(self)
+        self.wait_window(dialog)
+        if not dialog.result:
+            return
+        display_string, pynput_string, _tk_bind_string = dialog.result
+
+        current = _load_config().get("hotkey_pynput")
+        conflicts = self.master_app._all_used_hotkeys(exclude_pynput=current)
+        if pynput_string in conflicts:
+            messagebox.showwarning("Already in use", f"{display_string} is already assigned to "
+                                                        f"{conflicts[pynput_string]}. Pick a different combo.")
+            return
+
+        cfg = _load_config()
+        cfg["hotkey_display"] = display_string
+        cfg["hotkey_pynput"] = pynput_string
+        _save_config(cfg)
+        self.hotkey_display_var.set(display_string)
+        self.master_app._rebuild_hotkey_listener()
+        self.master_app._log(f"Global hotkey set: {display_string}")
+
+    def _clear_hotkey(self):
+        cfg = _load_config()
+        cfg.pop("hotkey_display", None)
+        cfg.pop("hotkey_pynput", None)
+        _save_config(cfg)
+        self.hotkey_display_var.set("Not set")
+        self.master_app._rebuild_hotkey_listener()
+        self.master_app._log("Global hotkey cleared.")
+
+    def _open_all_keybinds(self):
+        AllKeybindsDialog(self, self.master_app)
+
+    def _sync_custom_template_visibility(self):
+        if self.terminal_var.get() == "Custom command...":
+            self.custom_template_label.pack(anchor="w", padx=16, pady=(6, 2))
+            self.custom_template_entry.pack(fill="x", padx=16)
+            self.custom_template_example.pack(anchor="w", padx=16, pady=(2, 0))
+        else:
+            self.custom_template_label.pack_forget()
+            self.custom_template_entry.pack_forget()
+            self.custom_template_example.pack_forget()
+
+    def _current_terminal_pref(self):
+        choice = self.terminal_var.get()
+        if choice == "Auto-detect":
+            return "auto", ""
+        if choice == "Custom command...":
+            return "custom", self.custom_template_var.get().strip()
+        return choice, ""
+
+    def _save_terminal_pref(self):
+        pref, template = self._current_terminal_pref()
+        if pref == "custom" and "%CMD%" not in template:
+            messagebox.showwarning("Missing %CMD%", "Your custom command needs a %CMD% placeholder for where "
+                                                       "the actual command gets inserted.")
+            return
+        cfg = _load_config()
+        cfg["preferred_terminal"] = pref
+        cfg["custom_terminal_template"] = template
+        _save_config(cfg)
+        messagebox.showinfo("Saved", "Terminal preference saved.")
+
+    def _test_terminal(self):
+        pref, template = self._current_terminal_pref()
+        cfg = _load_config()
+        cfg["preferred_terminal"] = pref
+        cfg["custom_terminal_template"] = template
+        _save_config(cfg)
+        test_entry = {"id": "test", "name": "Terminal Test", "command": 'echo "Command Vault terminal test - it works!"',
+                      "working_dir": "", "run_mode": "terminal", "entry_type": "command"}
+        run_entry(test_entry, log=self.master_app._log)
 
     def _toggle_app_autostart(self):
         try:
@@ -885,23 +1410,355 @@ class SettingsDialog(tk.Toplevel):
 
 
 # ---------------------------------------------------------------------------
+# Global hotkey: capture (local, dialog-scoped) and tray icon (for background mode)
+# ---------------------------------------------------------------------------
+MODIFIER_KEYSYMS = {
+    "Control_L": "ctrl", "Control_R": "ctrl",
+    "Alt_L": "alt", "Alt_R": "alt",
+    "Shift_L": "shift", "Shift_R": "shift",
+    "Super_L": "cmd", "Super_R": "cmd",
+}
+
+MODIFIER_ORDER = ["ctrl", "alt", "shift", "cmd"]
+
+TK_MODIFIER_NAMES = {"ctrl": "Control", "alt": "Alt", "shift": "Shift", "cmd": "Super"}
+
+SPECIAL_KEYSYM_TO_PYNPUT = {
+    "space": "<space>", "Return": "<enter>", "Escape": "<esc>", "Tab": "<tab>",
+    "BackSpace": "<backspace>", "Delete": "<delete>",
+    "Up": "<up>", "Down": "<down>", "Left": "<left>", "Right": "<right>",
+    "Home": "<home>", "End": "<end>", "Page_Up": "<page_up>", "Page_Down": "<page_down>",
+    "F1": "<f1>", "F2": "<f2>", "F3": "<f3>", "F4": "<f4>", "F5": "<f5>", "F6": "<f6>",
+    "F7": "<f7>", "F8": "<f8>", "F9": "<f9>", "F10": "<f10>", "F11": "<f11>", "F12": "<f12>",
+}
+
+
+def tk_keysym_to_pynput(keysym):
+    if keysym in SPECIAL_KEYSYM_TO_PYNPUT:
+        return SPECIAL_KEYSYM_TO_PYNPUT[keysym]
+    if len(keysym) == 1:
+        return keysym.lower()
+    return None
+
+
+def build_tray_image(size=64):
+    """Draws the same padlock icon as packaging/icon.png, in-memory, so the
+    tray icon doesn't depend on bundling a separate asset file."""
+    img = PILImage.new("RGBA", (size, size), (0, 0, 0, 0))
+    d = PILImageDraw.Draw(img)
+    d.rounded_rectangle([0, 0, size, size], radius=size // 6, fill=(30, 30, 46, 255))
+    cx, cy = size // 2, size // 2 + size // 25
+    bw, bh = int(size * 0.5), int(size * 0.38)
+    body = [cx - bw // 2, cy - bh // 2, cx + bw // 2, cy + bh // 2]
+    d.rounded_rectangle(body, radius=size // 18, fill=(36, 36, 56, 255), outline=(137, 180, 250, 255),
+                         width=max(2, size // 26))
+    shackle = [cx - size // 6, cy - bh // 2 - size // 4, cx + size // 6, cy - bh // 2 + size // 13]
+    d.arc(shackle, start=180, end=360, fill=(137, 180, 250, 255), width=max(2, size // 20))
+    d.ellipse([cx - size // 24 - 2, cy - size // 18, cx + size // 24 + 2, cy + size // 18], fill=(137, 180, 250, 255))
+    return img
+
+
+class HotkeyRecorderDialog(tk.Toplevel):
+    """Minecraft-style capture: click Record, hold modifiers + press a key,
+    it finalizes immediately. Local Tkinter key events are enough here since
+    this dialog has focus while recording -- only *triggering* the saved
+    hotkey later needs to be global (that's pynput's job, in CommandVault)."""
+    def __init__(self, master):
+        super().__init__(master)
+        self.result = None
+        self.title("Record Shortcut")
+        self.configure(bg=COLOR_BG)
+        self.resizable(False, False)
+        self.grab_set()
+        self.held_modifiers = set()
+
+        self.status_var = tk.StringVar(value="Press a key combination\u2026")
+        tk.Label(self, textvariable=self.status_var, bg=COLOR_BG, fg=COLOR_TEXT, font=("Segoe UI", 14, "bold")
+                 ).pack(padx=36, pady=(28, 8))
+        tk.Label(self, text="Hold Ctrl/Alt/Shift/Super and press a key. Esc to cancel.",
+                 bg=COLOR_BG, fg=COLOR_SUBTEXT, font=FONT_SMALL).pack(padx=20, pady=(0, 24))
+
+        self.bind("<KeyPress>", self._on_key_press)
+        self.bind("<KeyRelease>", self._on_key_release)
+        self.focus_set()
+
+    def _on_key_press(self, event):
+        keysym = event.keysym
+        if keysym in MODIFIER_KEYSYMS:
+            self.held_modifiers.add(MODIFIER_KEYSYMS[keysym])
+            self._update_status()
+            return
+        if keysym == "Escape":
+            self.result = None
+            self.destroy()
+            return
+
+        pynput_key = tk_keysym_to_pynput(keysym)
+        if not pynput_key:
+            self.status_var.set(f"'{keysym}' isn't supported \u2014 try another key")
+            return
+        if not self.held_modifiers:
+            self.status_var.set("Add at least one modifier (Ctrl/Alt/Shift/Super)")
+            return
+
+        mods = [m for m in MODIFIER_ORDER if m in self.held_modifiers]
+        pynput_string = "+".join([f"<{m}>" for m in mods] + [pynput_key])
+        display_key = keysym if len(keysym) > 1 else keysym.upper()
+        display_string = "+".join([m.capitalize() for m in mods] + [display_key])
+        tk_bind_string = "<" + "-".join([TK_MODIFIER_NAMES[m] for m in mods] + [keysym]) + ">"
+        self.result = (display_string, pynput_string, tk_bind_string)
+        self.destroy()
+
+    def _on_key_release(self, event):
+        keysym = event.keysym
+        if keysym in MODIFIER_KEYSYMS:
+            self.held_modifiers.discard(MODIFIER_KEYSYMS[keysym])
+            self._update_status()
+
+    def _update_status(self):
+        if self.held_modifiers:
+            mods = "+".join(m.capitalize() for m in MODIFIER_ORDER if m in self.held_modifiers)
+            self.status_var.set(f"{mods}+\u2026 (now press a key)")
+        else:
+            self.status_var.set("Press a key combination\u2026")
+
+
+class AllKeybindsDialog(tk.Toplevel):
+    """Read-only overview of every configured shortcut: the app-level
+    reopen hotkey, the local insert-input-box shortcut, and every entry's
+    own launch hotkey. Actual changes happen where each is defined."""
+    def __init__(self, master, app):
+        super().__init__(master)
+        self.title("All Keybinds")
+        self.configure(bg=COLOR_BG)
+        self.geometry("460x420")
+        self.transient(master)
+        self.grab_set()
+
+        tk.Label(self, text="All Keybinds", bg=COLOR_BG, fg=COLOR_TEXT, font=FONT_HEADING
+                 ).pack(anchor="w", padx=16, pady=(16, 8))
+
+        list_frame = tk.Frame(self, bg=COLOR_BG)
+        list_frame.pack(fill="both", expand=True, padx=16)
+
+        columns = ("what", "shortcut")
+        tree = ttk.Treeview(list_frame, columns=columns, show="headings", selectmode="none")
+        tree.heading("what", text="Command / Action")
+        tree.heading("shortcut", text="Shortcut")
+        tree.column("what", width=280, anchor="w")
+        tree.column("shortcut", width=140, anchor="w")
+        tree.pack(side="left", fill="both", expand=True)
+        scroll = ttk.Scrollbar(list_frame, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=scroll.set)
+        scroll.pack(side="right", fill="y")
+
+        cfg = _load_config()
+        rows = []
+        app_hk = cfg.get("hotkey_display")
+        rows.append(("App: Show Command Vault", app_hk or "Not set"))
+        ph_hk = cfg.get("insert_placeholder_display", "Ctrl+I (default)")
+        rows.append(("Insert Input Box (in command editor)", ph_hk))
+        for entry in app.data.get("commands", []):
+            hk = entry.get("hotkey_display")
+            if hk:
+                rows.append((f'{entry.get("icon", "")} {entry["name"]} ({entry["category"]})', hk))
+
+        for i, (what, shortcut) in enumerate(rows):
+            tag = "even" if i % 2 else "odd"
+            tree.insert("", tk.END, values=(what, shortcut), tags=(tag,))
+        tree.tag_configure("odd", background=COLOR_PANEL)
+        tree.tag_configure("even", background=COLOR_ROW_ALT)
+
+        entry_count = len(rows) - 2
+        if entry_count == 0:
+            tk.Label(self, text="No per-command shortcuts set yet \u2014 add one from an entry's Edit dialog.",
+                     bg=COLOR_BG, fg=COLOR_SUBTEXT, font=FONT_SMALL, wraplength=420, justify="left"
+                     ).pack(anchor="w", padx=16, pady=(8, 0))
+
+        tk.Button(self, text="Close", command=self.destroy, bg=COLOR_PANEL, fg=COLOR_TEXT,
+                  relief="flat", padx=14, pady=4).pack(pady=16)
+
+
+# ---------------------------------------------------------------------------
 # Main application
 # ---------------------------------------------------------------------------
 class CommandVault(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Command Vault")
-        self.geometry("860x540")
-        self.minsize(700, 440)
+        self.geometry("860x680")
+        self.minsize(700, 520)
         self.configure(bg=COLOR_BG)
 
         self.data = load_data()
         self.selected_category = ALL_CATEGORY
+        self._log_queue = queue.Queue()
+        self._main_thread_queue = queue.Queue()
+        self._hotkey_listener = None
+        self._tray_icon = None
 
         self._build_style()
         self._build_layout()
         self._refresh_categories()
         self._refresh_list()
+        self.after(150, self._drain_log_queue)
+        self._log("Command Vault ready.")
+
+        self.protocol("WM_DELETE_WINDOW", self._on_close_request)
+        self._rebuild_hotkey_listener()
+
+    # -- global hotkey / background mode ------------------------------------
+    def _rebuild_hotkey_listener(self, retry_count=0):
+        """Rebuilds the single combined GlobalHotKeys listener from the
+        app-level hotkey (config.json) plus every entry's own hotkey
+        (commands.json). Call this after any hotkey is added/changed/removed.
+
+        retry_count > 0 means this call is itself a retry: registration can
+        fail right at login/autostart if the X session isn't fully up yet,
+        so failures here back off and try again a few times rather than
+        giving up silently."""
+        if not HAVE_PYNPUT:
+            return
+        self._stop_hotkey_listener()
+
+        mapping = {}
+        cfg = _load_config()
+        app_hotkey = cfg.get("hotkey_pynput")
+        if app_hotkey:
+            mapping[app_hotkey] = self._on_app_hotkey_triggered
+
+        for entry in self.data.get("commands", []):
+            hk = entry.get("hotkey_pynput")
+            if hk and hk not in mapping:
+                mapping[hk] = self._make_entry_hotkey_callback(entry["id"])
+
+        if not mapping:
+            return
+
+        try:
+            self._hotkey_listener = pynput_keyboard.GlobalHotKeys(mapping)
+            self._hotkey_listener.daemon = True
+            self._hotkey_listener.start()
+            # GlobalHotKeys() and .start() succeed synchronously even when
+            # the underlying X connection is broken -- that failure happens
+            # *inside* the listener's background thread (e.g. X session not
+            # ready yet at login), which then dies silently with no
+            # exception we can catch here. So verify shortly after that the
+            # thread is actually still alive before declaring success.
+            self.after(500, lambda: self._verify_hotkey_listener(retry_count))
+        except Exception as e:
+            self._hotkey_listener = None
+            self._schedule_hotkey_retry(retry_count, e)
+
+    def _verify_hotkey_listener(self, retry_count):
+        listener = self._hotkey_listener
+        if listener is None:
+            return  # already replaced or cleared by something else since
+        if not listener.is_alive():
+            self._hotkey_listener = None
+            self._schedule_hotkey_retry(retry_count, "listener thread died (X session likely wasn't ready)")
+        elif retry_count > 0:
+            self._log("Global hotkeys registered successfully.")
+
+    def _schedule_hotkey_retry(self, retry_count, error):
+        max_retries = 5
+        if retry_count < max_retries:
+            delay_ms = min(2000 * (retry_count + 1), 10000)
+            self._log(f"Hotkey registration failed (attempt {retry_count + 1}/{max_retries}), "
+                      f"retrying in {delay_ms // 1000}s: {error}")
+            self.after(delay_ms, lambda: self._rebuild_hotkey_listener(retry_count + 1))
+        else:
+            self._log(f"Couldn't register global hotkey(s) after {max_retries} attempts: {error}")
+
+    def _make_entry_hotkey_callback(self, entry_id):
+        def callback():
+            self._post_to_main_thread(lambda: self._run_entry_by_id(entry_id))
+        return callback
+
+    def _run_entry_by_id(self, entry_id):
+        for entry in self.data.get("commands", []):
+            if entry["id"] == entry_id:
+                run_entry(entry, log=self._log)
+                return
+
+    def _all_used_hotkeys(self, exclude_pynput=None):
+        """Returns {pynput_string: description} across the app-level hotkey
+        and every entry's hotkey, for conflict checking. exclude_pynput lets
+        the thing currently being edited not conflict with its own old value."""
+        used = {}
+        cfg = _load_config()
+        app_hotkey = cfg.get("hotkey_pynput")
+        if app_hotkey and app_hotkey != exclude_pynput:
+            used[app_hotkey] = f"App: Show Command Vault ({cfg.get('hotkey_display', '')})"
+        for entry in self.data.get("commands", []):
+            hk = entry.get("hotkey_pynput")
+            if hk and hk != exclude_pynput:
+                used[hk] = f'"{entry["name"]}" ({entry.get("hotkey_display", "")})'
+        return used
+
+    def _on_app_hotkey_triggered(self):
+        self._post_to_main_thread(self._show_window)
+
+    def _stop_hotkey_listener(self):
+        if self._hotkey_listener:
+            try:
+                self._hotkey_listener.stop()
+            except Exception:
+                pass
+            self._hotkey_listener = None
+
+    def _post_to_main_thread(self, fn):
+        self._main_thread_queue.put(fn)
+
+    def _show_window(self):
+        self.deiconify()
+        self.lift()
+        self.focus_force()
+
+    def _ensure_tray_icon(self):
+        if self._tray_icon:
+            return True
+        if not HAVE_PYSTRAY:
+            return False
+        try:
+            image = build_tray_image()
+            menu = pystray.Menu(
+                pystray.MenuItem("Show Command Vault", lambda: self._post_to_main_thread(self._show_window),
+                                  default=True),
+                pystray.MenuItem("Quit", lambda: self._post_to_main_thread(self._quit_app)),
+            )
+            self._tray_icon = pystray.Icon("command-vault", image, "Command Vault", menu)
+            self._tray_icon.run_detached()
+            return True
+        except Exception as e:
+            self._tray_icon = None
+            self._log(f"Tray icon unavailable ({e})")
+            return False
+
+    def _stop_tray_icon(self):
+        if self._tray_icon:
+            try:
+                self._tray_icon.stop()
+            except Exception:
+                pass
+            self._tray_icon = None
+
+    def _on_close_request(self):
+        cfg = _load_config()
+        if not cfg.get("hotkey_pynput"):
+            self._quit_app()
+            return
+        if self._ensure_tray_icon():
+            self.withdraw()
+            self._log("Minimized to tray \u2014 press your hotkey or use the tray icon to reopen.")
+        else:
+            self.iconify()
+            self._log("Minimized \u2014 press your hotkey or restore from the taskbar to reopen.")
+
+    def _quit_app(self):
+        self._stop_hotkey_listener()
+        self._stop_tray_icon()
+        self.destroy()
 
     # -- styling -----------------------------------------------------------
     def _build_style(self):
@@ -989,14 +1846,72 @@ class CommandVault(tk.Tk):
         self.tree.tag_configure("even", background=COLOR_ROW_ALT)
 
         action_bar = tk.Frame(main, bg=COLOR_BG)
-        action_bar.pack(fill="x", padx=20, pady=(0, 20))
+        action_bar.pack(fill="x", padx=20, pady=(0, 10))
 
         tk.Button(action_bar, text="\u25B6 Run", command=self._run_selected, bg=COLOR_GREEN, fg=COLOR_SIDEBAR,
                   font=("Segoe UI", 10, "bold"), relief="flat", padx=16, pady=6).pack(side="left")
+        self.run_all_button = tk.Button(action_bar, text="\u25B6\u25B6 Run All", command=self._run_visible,
+                                         bg=COLOR_YELLOW, fg=COLOR_SIDEBAR, font=("Segoe UI", 10, "bold"),
+                                         relief="flat", padx=16, pady=6)
+        self.run_all_button.pack(side="left", padx=(8, 0))
         tk.Button(action_bar, text="Edit", command=self._edit_selected, bg=COLOR_PANEL, fg=COLOR_TEXT,
                   font=FONT_NORMAL, relief="flat", padx=16, pady=6).pack(side="left", padx=(8, 0))
         tk.Button(action_bar, text="Delete", command=self._delete_selected, bg=COLOR_PANEL, fg=COLOR_RED,
                   font=FONT_NORMAL, relief="flat", padx=16, pady=6).pack(side="left", padx=(8, 0))
+
+        # Console panel: shows exactly what ran and its live output, so
+        # silent-mode entries (which show no window) aren't a black box.
+        console_header = tk.Frame(main, bg=COLOR_BG)
+        console_header.pack(fill="x", padx=20)
+        tk.Label(console_header, text="CONSOLE", bg=COLOR_BG, fg=COLOR_SUBTEXT, font=FONT_SMALL,
+                 anchor="w").pack(side="left")
+        tk.Button(console_header, text="Clear", command=self._clear_console, bg=COLOR_BG, fg=COLOR_SUBTEXT,
+                  relief="flat", font=FONT_SMALL, padx=6).pack(side="right")
+
+        console_frame = tk.Frame(main, bg=COLOR_PANEL, height=150)
+        console_frame.pack(fill="x", padx=20, pady=(4, 20))
+        console_frame.pack_propagate(False)
+
+        self.console_text = tk.Text(console_frame, bg=COLOR_PANEL, fg=COLOR_TEXT,
+                                     font=("Consolas", 9) if is_windows() else ("DejaVu Sans Mono", 9),
+                                     relief="flat", wrap="word", state="disabled", padx=8, pady=6)
+        self.console_text.pack(side="left", fill="both", expand=True)
+        console_scroll = ttk.Scrollbar(console_frame, orient="vertical", command=self.console_text.yview)
+        self.console_text.configure(yscrollcommand=console_scroll.set)
+        console_scroll.pack(side="right", fill="y")
+
+    def _clear_console(self):
+        self.console_text.configure(state="normal")
+        self.console_text.delete("1.0", tk.END)
+        self.console_text.configure(state="disabled")
+
+    def _log(self, message):
+        """Thread-safe: worker threads (reading silent-mode process output)
+        call this too -- it only queues; the widget update happens on the
+        main thread via _drain_log_queue."""
+        self._log_queue.put(message)
+
+    def _drain_log_queue(self):
+        try:
+            while True:
+                message = self._log_queue.get_nowait()
+                self._append_console(message)
+        except queue.Empty:
+            pass
+        try:
+            while True:
+                fn = self._main_thread_queue.get_nowait()
+                fn()
+        except queue.Empty:
+            pass
+        self.after(150, self._drain_log_queue)
+
+    def _append_console(self, message):
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self.console_text.configure(state="normal")
+        self.console_text.insert(tk.END, f"[{timestamp}] {message}\n")
+        self.console_text.see(tk.END)
+        self.console_text.configure(state="disabled")
 
     def _set_placeholder(self, entry, text):
         entry.insert(0, text)
@@ -1104,7 +2019,8 @@ class CommandVault(tk.Tk):
         if not hasattr(self, "tree"):
             return
         self.tree.delete(*self.tree.get_children())
-        for i, cmd in enumerate(self._visible_commands()):
+        visible = self._visible_commands()
+        for i, cmd in enumerate(visible):
             mode_label = "Silent" if cmd.get("run_mode") == "silent" else "Terminal"
             if cmd.get("entry_type") == "appimage":
                 mode_label += " \u00b7 AppImage"
@@ -1114,6 +2030,47 @@ class CommandVault(tk.Tk):
                               values=(cmd.get("icon", DEFAULT_ICON), cmd["name"], cmd["category"], mode_label,
                                       boot_label),
                               tags=(tag,))
+        self._update_run_all_label(len(visible))
+
+    def _update_run_all_label(self, count):
+        if not hasattr(self, "run_all_button"):
+            return
+        if self.selected_category == ALL_CATEGORY:
+            label = f"\u25B6\u25B6 Run All ({count})"
+        else:
+            label = f"\u25B6\u25B6 Run All in {self.selected_category} ({count})"
+        self.run_all_button.config(text=label, state=("normal" if count else "disabled"))
+
+    def _run_visible(self):
+        entries = self._visible_commands()
+        if not entries:
+            messagebox.showinfo("Nothing to run", "There are no entries in the current view.")
+            return
+
+        runnable = [e for e in entries if not extract_placeholders(e.get("command", ""))]
+        skipped_ids = {e["id"] for e in entries} - {e["id"] for e in runnable}
+        skipped = [e for e in entries if e["id"] in skipped_ids]
+
+        scope = "all categories" if self.selected_category == ALL_CATEGORY else f"'{self.selected_category}'"
+        query = self.search_var.get().strip()
+        if query and query.lower() != "search commands...":
+            scope += f" matching \"{query}\""
+
+        msg = f"This will launch {len(runnable)} entries in {scope}."
+        if skipped:
+            names = ", ".join(e["name"] for e in skipped)
+            msg += f"\n\n{len(skipped)} skipped (need values filled in \u2014 run individually): {names}"
+        msg += "\n\nContinue?"
+
+        if not runnable:
+            messagebox.showinfo("Nothing to run", "Every entry in this view needs values filled in \u2014 run them individually.")
+            return
+
+        if not messagebox.askyesno("Run all?", msg):
+            return
+
+        for entry in runnable:
+            run_entry(entry, log=self._log)
 
     def _get_selected_entry(self):
         sel = self.tree.selection()
@@ -1131,6 +2088,14 @@ class CommandVault(tk.Tk):
         return used or [UNCATEGORIZED]
 
     def _apply_autostart(self, entry):
+        if entry.get("autostart") and extract_placeholders(entry.get("command", "")):
+            messagebox.showwarning(
+                "Heads up",
+                f'"{entry["name"]}" uses {{{{placeholders}}}} that need values filled in each run.\n\n'
+                "At boot there's no one to prompt, so it will run with the literal "
+                "{{name}} text still in it and likely fail. Consider removing the "
+                "placeholders for autostart entries, or leaving autostart off for this one."
+            )
         try:
             set_entry_autostart(entry, entry.get("autostart", False))
         except NotImplementedError as e:
@@ -1145,6 +2110,7 @@ class CommandVault(tk.Tk):
                 self.data["categories"].append(dialog.result["category"])
             save_data(self.data)
             self._apply_autostart(dialog.result)
+            self._rebuild_hotkey_listener()
             self._refresh_categories()
             self._refresh_list()
 
@@ -1162,6 +2128,7 @@ class CommandVault(tk.Tk):
                 self.data["categories"].append(dialog.result["category"])
             save_data(self.data)
             self._apply_autostart(dialog.result)
+            self._rebuild_hotkey_listener()
             self._refresh_categories()
             self._refresh_list()
 
@@ -1177,6 +2144,7 @@ class CommandVault(tk.Tk):
                 set_entry_autostart(entry, False)
             except NotImplementedError:
                 pass
+            self._rebuild_hotkey_listener()
             self._refresh_categories()
             self._refresh_list()
 
@@ -1185,7 +2153,7 @@ class CommandVault(tk.Tk):
         if not entry:
             messagebox.showinfo("No selection", "Select an entry to run first.")
             return
-        run_entry(entry)
+        run_entry(entry, log=self._log)
 
 
 if __name__ == "__main__":

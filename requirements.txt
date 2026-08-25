@@ -1,5 +1,11 @@
-# Command Vault has no runtime dependencies beyond the Python standard
+# Command Vault has no hard runtime dependencies beyond the Python standard
 # library + Tk (install python3-tk via your OS package manager on Linux).
 #
-# The following is only needed to build standalone binaries:
+# Optional, for the global hotkey / background-launcher feature (Settings ->
+# Global Hotkey and per-entry Launch Shortcut). The app runs fine without
+# these -- that feature just won't be available.
+pynput
+pystray
+
+# Only needed to build standalone binaries:
 pyinstaller
