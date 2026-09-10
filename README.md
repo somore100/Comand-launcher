@@ -64,6 +64,3 @@ Issues and pull requests are welcome — especially around packaging for additio
 ## License
 
 MIT — see [LICENSE](LICENSE).
-
-<img width="858" height="641" alt="Command_launcher(vault)" src="https://github.com/user-attachments/assets/a066ba84-a7d9-4d5c-83b8-f29367e4acf7" />
-<img width="858" height="641" alt="Command launcher(vault)" src="https://github.com/user-attachments/assets/6190c615-2150-48ca-8af9-fc6eb32b748a" />
