@@ -1,0 +1,142 @@
+name: Build Releases
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch: {}
+
+jobs:
+  build-linux-appimage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-tk
+
+      - name: Install Python dependencies
+        run: pip install pyinstaller pynput pystray
+
+      - name: Build binary with PyInstaller
+        run: |
+          pyinstaller --onefile --windowed --name CommandVault --icon packaging/icon.ico \
+            --hidden-import pynput.keyboard._xorg \
+            --hidden-import pynput.mouse._xorg \
+            --hidden-import pystray._xorg \
+            main.py
+
+      - name: Assemble AppDir
+        run: |
+          mkdir -p CommandVault.AppDir/usr/bin
+          cp dist/CommandVault CommandVault.AppDir/usr/bin/
+          cp packaging/icon.png CommandVault.AppDir/command-vault.png
+          cp packaging/command-vault.desktop CommandVault.AppDir/command-vault.desktop
+          cat > CommandVault.AppDir/AppRun << 'EOF'
+          #!/bin/bash
+          HERE="$(dirname "$(readlink -f "${0}")")"
+          export PATH="${HERE}/usr/bin:${PATH}"
+          exec "${HERE}/usr/bin/CommandVault" "$@"
+          EOF
+          chmod +x CommandVault.AppDir/AppRun CommandVault.AppDir/usr/bin/CommandVault
+
+      - name: Download appimagetool
+        run: |
+          wget -q "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage" -O appimagetool
+          chmod +x appimagetool
+
+      - name: Build AppImage
+        run: |
+          ./appimagetool --appimage-extract-and-run CommandVault.AppDir CommandVault-x86_64.AppImage
+
+      - name: Upload AppImage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CommandVault-Linux-AppImage
+          path: CommandVault-x86_64.AppImage
+
+  build-windows-exe:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies
+        run: pip install pyinstaller pynput pystray
+
+      - name: Build exe with PyInstaller
+        run: |
+          pyinstaller --onefile --windowed --name CommandVault --icon packaging/icon.ico `
+            --hidden-import pynput.keyboard._win32 `
+            --hidden-import pynput.mouse._win32 `
+            --hidden-import pystray._win32 `
+            main.py
+
+      - name: Upload exe artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CommandVault-Windows-exe
+          path: dist/CommandVault.exe
+
+  build-macos-dmg:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies
+        run: pip install pyinstaller pynput pystray
+
+      - name: Build .app with PyInstaller
+        run: |
+          pyinstaller --windowed --name CommandVault --icon packaging/icon.icns \
+            --hidden-import pynput.keyboard._darwin \
+            --hidden-import pynput.mouse._darwin \
+            --hidden-import pystray._darwin \
+            main.py
+
+      - name: Package into .dmg
+        run: |
+          hdiutil create -volname "Command Vault" -srcfolder dist/CommandVault.app \
+            -ov -format UDZO CommandVault-macOS.dmg
+
+      - name: Upload dmg artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CommandVault-macOS-dmg
+          path: CommandVault-macOS.dmg
+
+  release:
+    needs: [build-linux-appimage, build-windows-exe, build-macos-dmg]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/CommandVault-Linux-AppImage/CommandVault-x86_64.AppImage
+            artifacts/CommandVault-Windows-exe/CommandVault.exe
+            artifacts/CommandVault-macOS-dmg/CommandVault-macOS.dmg
