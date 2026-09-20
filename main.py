@@ -12,6 +12,12 @@ import shutil
 import threading
 import queue
 import shlex
+import socket
+import base64
+import io
+import time
+import urllib.request
+import urllib.error
 from datetime import datetime
 
 try:
@@ -33,6 +39,8 @@ except Exception:
     HAVE_PYSTRAY = False
 
 APP_NAME = "Command Vault"
+APP_VERSION = "1.5.0"
+GITHUB_REPO = "somore100/Comand-launcher"  # typo in repo name is intentional, cosmetic only
 
 
 # ---------------------------------------------------------------------------
@@ -130,6 +138,89 @@ def _save_config(cfg):
     os.makedirs(app_config_dir(), exist_ok=True)
     with open(app_config_file(), "w") as f:
         json.dump(cfg, f, indent=4)
+
+
+# ---------------------------------------------------------------------------
+# Auto-update check
+# ---------------------------------------------------------------------------
+UPDATE_CHECK_COOLDOWN_SECONDS = 20 * 60 * 60  # don't hit the API more than ~once/day
+UPDATE_CHECK_TIMEOUT_SECONDS = 5
+
+
+def _parse_version(v):
+    """'v1.5.0' or '1.5.0-beta' -> (1, 5, 0). Non-numeric trailing parts
+    (pre-release suffixes) are dropped rather than raising, so an odd tag
+    name degrades to "can't tell, treat as not newer" instead of crashing
+    the check."""
+    v = v.strip().lstrip("vV")
+    parts = []
+    for chunk in v.split("."):
+        digits = ""
+        for ch in chunk:
+            if ch.isdigit():
+                digits += ch
+            else:
+                break
+        if not digits:
+            break
+        parts.append(int(digits))
+    return tuple(parts)
+
+
+def _version_is_newer(candidate, current):
+    return _parse_version(candidate) > _parse_version(current)
+
+
+def fetch_latest_release():
+    """Hits the GitHub Releases API for the latest release. Returns
+    (tag_name, html_url) or None on any failure (no network, rate limit,
+    repo has no releases yet, etc.) -- this is a best-effort background
+    check and must never raise into the caller."""
+    url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+    req = urllib.request.Request(url, headers={
+        "User-Agent": f"{APP_NAME.replace(' ', '-')}/{APP_VERSION}",
+        "Accept": "application/vnd.github+json",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=UPDATE_CHECK_TIMEOUT_SECONDS) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+        tag = payload.get("tag_name", "")
+        html_url = payload.get("html_url", f"https://github.com/{GITHUB_REPO}/releases")
+        if not tag:
+            return None
+        return tag, html_url
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError,
+            json.JSONDecodeError, OSError, ValueError):
+        return None
+
+
+def check_for_update(force=False, on_result=None):
+    """Runs the update check in a background daemon thread and calls
+    on_result(tag, html_url) on the SAME (background) thread if an update
+    is found -- callers that touch Tk must hop back to the main thread
+    themselves (see CommandVault._check_for_update_startup for the
+    pattern). Respects the cooldown and the "check automatically" setting
+    unless force=True (manual "Check for Updates" button)."""
+    cfg = _load_config()
+    if not force:
+        if not cfg.get("auto_update_check", True):
+            return
+        last_check = cfg.get("last_update_check", 0)
+        if time.time() - last_check < UPDATE_CHECK_COOLDOWN_SECONDS:
+            return
+
+    def _run():
+        result = fetch_latest_release()
+        cfg2 = _load_config()
+        cfg2["last_update_check"] = time.time()
+        _save_config(cfg2)
+        if result is None:
+            return
+        tag, html_url = result
+        if _version_is_newer(tag, APP_VERSION) and on_result:
+            on_result(tag, html_url)
+
+    threading.Thread(target=_run, daemon=True).start()
 
 
 def get_data_dir():
@@ -235,6 +326,10 @@ def app_autostart_enabled():
     return bool(path and os.path.exists(path))
 
 
+def app_autostart_script_path():
+    return os.path.join(linux_autostart_scripts_dir(), "command-vault-autostart.sh")
+
+
 def set_app_autostart(enabled):
     path = app_autostart_path()
     if not path:
@@ -242,13 +337,42 @@ def set_app_autostart(enabled):
     if not enabled:
         if os.path.exists(path):
             os.remove(path)
+        if is_linux():
+            script_path = app_autostart_script_path()
+            if os.path.exists(script_path):
+                os.remove(script_path)
         return
     if is_linux():
+        # Route through a real wrapper script instead of inlining into
+        # Exec=, for two reasons:
+        #  1. It sidesteps any quoting quirks in whichever Exec= parser the
+        #     user's session (GNOME/KDE/XFCE/etc.) happens to use.
+        #  2. When running as an AppImage, launching the AppImage directly
+        #     from Exec= relies on FUSE-mounting it, which races against the
+        #     desktop session's own startup (DBus / XDG_RUNTIME_DIR aren't
+        #     always up yet at the point autostart entries fire). This is a
+        #     well-documented class of "works fine double-clicked, silently
+        #     does nothing on autostart" AppImage bug. --appimage-extract-
+        #     and-run sidesteps FUSE for this one launch (slower, but it
+        #     actually starts), and a short `sleep` up front is a portable
+        #     stand-in for X-GNOME-Autostart-Delay on non-GNOME sessions.
+        appimage_path = os.environ.get("APPIMAGE")
+        script_path = app_autostart_script_path()
+        lines = ["#!/bin/bash", "sleep 3"]
+        if appimage_path:
+            lines.append(f'chmod +x "{appimage_path}" 2>/dev/null || true')
+            lines.append(f'"{appimage_path}" --appimage-extract-and-run')
+        else:
+            lines.append(app_relaunch_command())
+        with open(script_path, "w") as f:
+            f.write("\n".join(lines) + "\n")
+        os.chmod(script_path, 0o755)
+
         content = (
             "[Desktop Entry]\n"
             "Type=Application\n"
             "Name=Command Vault\n"
-            f"Exec={app_relaunch_command()}\n"
+            f'Exec=bash "{script_path}"\n'
             "X-GNOME-Autostart-enabled=true\n"
             "X-GNOME-Autostart-Delay=5\n"
         )
@@ -296,7 +420,15 @@ def set_entry_autostart(entry, enabled):
 
     command = entry["command"]
     working_dir = entry.get("working_dir") or ""
-    if entry.get("entry_type") == "appimage":
+    is_appimage_entry = entry.get("entry_type") == "appimage"
+    if is_appimage_entry and is_linux():
+        # See the matching comment in set_app_autostart(): launching an
+        # AppImage straight from Exec= races against the desktop session's
+        # own startup and can silently fail to mount via FUSE. Extract-and-
+        # run avoids that; chmod +x guards against a lost executable bit
+        # (e.g. after re-downloading or moving the file).
+        exec_cmd = f'chmod +x "{command}" 2>/dev/null || true\n"{command}" --appimage-extract-and-run'
+    elif is_appimage_entry:
         exec_cmd = f'"{command}"'
     else:
         exec_cmd = resolve_exec_command(command)
@@ -307,7 +439,7 @@ def set_entry_autostart(entry, enabled):
         # line has a "#" comment (bash treats the rest of that line as a
         # comment, silently dropping every command after it).
         script_path = os.path.join(linux_autostart_scripts_dir(), f"cv-{entry['id']}.sh")
-        lines = ["#!/bin/bash"]
+        lines = ["#!/bin/bash", "sleep 3"]
         if working_dir:
             lines.append(f'cd "{working_dir}" || exit 1')
         lines.append(exec_cmd)
@@ -392,17 +524,76 @@ def find_installed_apps():
 
 
 # ---------------------------------------------------------------------------
+# Single-instance lock
+# ---------------------------------------------------------------------------
+# Autostart + a global hotkey can each independently launch/wake an
+# instance, so nothing previously stopped two copies running at once --
+# both trying to register the same OS-level hotkeys, or both writing
+# commands.json at overlapping moments, is a real failure mode. A bound
+# TCP socket on a fixed localhost port doubles as a mutex (only one
+# process can hold the bind) and as a tiny IPC channel (a second launch
+# attempt connects, asks the first instance to raise its window, then
+# exits). 127.0.0.1-only binding avoids any firewall prompt on Windows.
+SINGLE_INSTANCE_PORT = 47812
+
+
+def notify_running_instance():
+    """If another instance already holds the lock, ask it to show its
+    window and return True (caller should exit immediately after)."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(0.5)
+        s.connect(("127.0.0.1", SINGLE_INSTANCE_PORT))
+        s.sendall(b"SHOW\n")
+        s.close()
+        return True
+    except OSError:
+        return False
+
+
+def acquire_single_instance_lock(on_show):
+    """Binds the mutex port and starts a background thread that calls
+    on_show() whenever a later launch attempt connects. Returns the
+    listening socket -- keep a reference for the app's lifetime and close
+    it on quit. Returns None if the port couldn't be bound for some other
+    reason (e.g. something else on the machine is using it); in that case
+    we simply proceed without the lock rather than blocking startup."""
+    try:
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 0)
+        srv.bind(("127.0.0.1", SINGLE_INSTANCE_PORT))
+        srv.listen(5)
+    except OSError:
+        return None
+
+    def _serve():
+        while True:
+            try:
+                conn, _ = srv.accept()
+            except OSError:
+                return  # socket was closed (app shutting down)
+            try:
+                conn.recv(16)
+            except OSError:
+                pass
+            finally:
+                try:
+                    conn.close()
+                except OSError:
+                    pass
+            on_show()
+
+    threading.Thread(target=_serve, daemon=True).start()
+    return srv
+
+
+# ---------------------------------------------------------------------------
 # Data layer
 # ---------------------------------------------------------------------------
-def load_data():
-    """Load commands.json, migrating the old flat-list format if needed."""
-    data_file = get_data_file()
-    if not os.path.exists(data_file):
-        return {"categories": [], "commands": [], "settings": {}}
-
-    with open(data_file, "r") as f:
-        raw = json.load(f)
-
+def _normalize_vault_data(raw):
+    """Shared normalization for a parsed commands.json payload: migrates the
+    old flat-list format and fills in defaults for any fields added since
+    an entry was first saved. Used by both load_data() and vault Import."""
     # Old format: a plain list of {"name": ..., "command": ...}
     if isinstance(raw, list):
         commands = []
@@ -429,6 +620,43 @@ def load_data():
         cmd.setdefault("hotkey_display", "")
         cmd.setdefault("hotkey_pynput", "")
     return raw
+
+
+def load_data():
+    """Load commands.json, migrating the old flat-list format if needed."""
+    data_file = get_data_file()
+    if not os.path.exists(data_file):
+        return {"categories": [], "commands": [], "settings": {}}
+
+    try:
+        with open(data_file, "r") as f:
+            raw = json.load(f)
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
+        # A partial write from a crash, a bad manual edit, or a disk issue
+        # can leave commands.json unparsable. Rather than crashing on every
+        # startup from then on, quarantine the bad file and start fresh --
+        # the vault is recoverable (existing hotkeys/autostart entries just
+        # need re-adding) but a permanently unlaunchable app is not.
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        quarantined = f"{data_file}.corrupted-{timestamp}"
+        try:
+            shutil.move(data_file, quarantined)
+        except OSError:
+            quarantined = None
+        try:
+            messagebox.showwarning(
+                "Command Vault",
+                "Your commands.json file appears to be corrupted and "
+                f"couldn't be read ({e}).\n\n"
+                + (f"The bad file has been saved as:\n{quarantined}\n\n"
+                   if quarantined else "")
+                + "Starting with an empty vault."
+            )
+        except tk.TclError:
+            pass  # no Tk root yet (e.g. called before mainloop is set up)
+        return {"categories": [], "commands": [], "settings": {}}
+
+    return _normalize_vault_data(raw)
 
 
 def _blank_entry(name="", command=""):
@@ -610,6 +838,28 @@ def get_terminal_builders():
     return builders
 
 
+APPIMAGE_RUNTIME_ENV_VARS = ("APPIMAGE", "APPDIR", "ARGV0", "OWD")
+
+
+def child_process_env():
+    """Environment to launch a user's entry with. When Command Vault itself
+    is running as an AppImage, the AppImage runtime sets APPIMAGE/APPDIR/
+    ARGV0/OWD on our own process, and subprocess.Popen inherits the full
+    parent environment by default -- so every script or app we launch would
+    otherwise also see (for example) APPIMAGE=/path/to/CommandVault.AppImage,
+    regardless of whether it has anything to do with AppImages. A launched
+    entry that happens to also check that variable then behaves as if it
+    were itself running from inside CommandVault's AppImage -- wrong, and
+    genuinely confusing to debug since it only reproduces when launched via
+    Command Vault's own AppImage build, not when run standalone. Strip
+    Command Vault's own AppImage-runtime variables before handing the
+    environment to a child."""
+    env = os.environ.copy()
+    for var in APPIMAGE_RUNTIME_ENV_VARS:
+        env.pop(var, None)
+    return env
+
+
 def run_entry(entry, log=None):
     """Runs an entry. `log`, if given, is called with short status strings
     for the console panel -- e.g. the resolved command, working dir, and
@@ -659,6 +909,7 @@ def run_entry(entry, log=None):
                 exec_cmd,
                 shell=True,
                 cwd=working_dir,
+                env=child_process_env(),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 stdin=subprocess.DEVNULL,
@@ -683,7 +934,7 @@ def run_entry(entry, log=None):
 
     for builder in get_terminal_builders():
         try:
-            subprocess.Popen(builder(exec_cmd), cwd=working_dir)
+            subprocess.Popen(builder(exec_cmd), cwd=working_dir, env=child_process_env())
             emit(f'  \u2192 Opened in terminal')
             return
         except FileNotFoundError:
@@ -1174,7 +1425,22 @@ class SettingsDialog(tk.Toplevel):
                   ).pack(anchor="w", padx=16, pady=(8, 4))
 
         tk.Label(self, text="Existing data moves automatically to the new folder.", bg=COLOR_BG,
-                 fg=COLOR_SUBTEXT, font=("Segoe UI", 8)).pack(anchor="w", padx=16, pady=(0, 16))
+                 fg=COLOR_SUBTEXT, font=("Segoe UI", 8)).pack(anchor="w", padx=16, pady=(0, 12))
+
+        backup_row = tk.Frame(self, bg=COLOR_BG)
+        backup_row.pack(anchor="w", padx=16, pady=(0, 4))
+        tk.Button(backup_row, text="Export Vault...", command=self._export_vault, bg=COLOR_PANEL,
+                  fg=COLOR_TEXT, relief="flat", font=FONT_SMALL, padx=10, pady=4
+                  ).pack(side="left")
+        tk.Button(backup_row, text="Import Vault...", command=self._import_vault, bg=COLOR_PANEL,
+                  fg=COLOR_TEXT, relief="flat", font=FONT_SMALL, padx=10, pady=4
+                  ).pack(side="left", padx=(8, 0))
+
+        tk.Label(self, text="Export saves all your categories and commands to a single file \u2014 cheap "
+                             "insurance before big edits or moving to a new machine. Import replaces your "
+                             "current vault with one from a file.",
+                 bg=COLOR_BG, fg=COLOR_SUBTEXT, font=("Segoe UI", 8), wraplength=360, justify="left"
+                 ).pack(anchor="w", padx=16, pady=(0, 16))
 
         if is_linux():
             tk.Frame(self, bg=COLOR_PANEL, height=1).pack(fill="x", padx=16, pady=(0, 14))
@@ -1289,8 +1555,64 @@ class SettingsDialog(tk.Toplevel):
         tk.Button(ph_btn_row, text="Reset to Ctrl+I", command=self._clear_placeholder_shortcut, bg=COLOR_PANEL,
                   fg=COLOR_TEXT, relief="flat", font=FONT_SMALL, padx=12, pady=4).pack(side="left", padx=(8, 0))
 
+        tk.Frame(self, bg=COLOR_PANEL, height=1).pack(fill="x", padx=16, pady=(0, 14))
+
+        tk.Label(self, text="Updates", bg=COLOR_BG, fg=COLOR_TEXT, font=FONT_HEADING
+                 ).pack(anchor="w", padx=16)
+        tk.Label(self, text=f"You're running v{APP_VERSION}.", bg=COLOR_BG, fg=COLOR_SUBTEXT,
+                 font=FONT_SMALL).pack(anchor="w", padx=16, pady=(6, 8))
+
+        auto_check_cfg = _load_config()
+        self.auto_update_var = tk.BooleanVar(value=auto_check_cfg.get("auto_update_check", True))
+        tk.Checkbutton(self, text="Check for updates automatically (about once a day)",
+                        variable=self.auto_update_var, bg=COLOR_BG, fg=COLOR_TEXT, selectcolor=COLOR_PANEL,
+                        activebackground=COLOR_BG, activeforeground=COLOR_TEXT, font=FONT_NORMAL,
+                        command=self._toggle_auto_update_check).pack(anchor="w", padx=16)
+
+        self.update_status_var = tk.StringVar(value="")
+        tk.Button(self, text="Check for Updates", command=self._check_for_updates_manual, bg=COLOR_PANEL,
+                  fg=COLOR_TEXT, relief="flat", font=FONT_SMALL, padx=10, pady=4
+                  ).pack(anchor="w", padx=16, pady=(10, 4))
+        tk.Label(self, textvariable=self.update_status_var, bg=COLOR_BG, fg=COLOR_SUBTEXT, font=FONT_SMALL,
+                 wraplength=360, justify="left").pack(anchor="w", padx=16, pady=(0, 16))
+
         tk.Button(self, text="Close", command=self.destroy, bg=COLOR_PANEL, fg=COLOR_TEXT,
                   relief="flat", padx=14, pady=4).pack(pady=(0, 16))
+
+    def _toggle_auto_update_check(self):
+        cfg = _load_config()
+        cfg["auto_update_check"] = self.auto_update_var.get()
+        _save_config(cfg)
+
+    def _check_for_updates_manual(self):
+        self.update_status_var.set("Checking...")
+
+        def _run():
+            result = fetch_latest_release()
+            cfg = _load_config()
+            cfg["last_update_check"] = time.time()
+            _save_config(cfg)
+
+            def _apply():
+                if not self.winfo_exists():
+                    return  # Settings dialog was closed before the check finished
+                if result is None:
+                    self.update_status_var.set(
+                        "Couldn't check for updates (no network, or GitHub is unreachable right now).")
+                    return
+                tag, html_url = result
+                if _version_is_newer(tag, APP_VERSION):
+                    self.update_status_var.set(f"{tag} is available.")
+                    if messagebox.askyesno("Update available",
+                                            f"Command Vault {tag} is available (you have v{APP_VERSION}).\n\n"
+                                            f"Open the release page?"):
+                        self.master_app._open_url(html_url)
+                else:
+                    self.update_status_var.set(f"You're on the latest version (v{APP_VERSION}).")
+
+            self.master_app._post_to_main_thread(_apply)
+
+        threading.Thread(target=_run, daemon=True).start()
 
     def _record_placeholder_shortcut(self):
         dialog = HotkeyRecorderDialog(self)
@@ -1408,6 +1730,100 @@ class SettingsDialog(tk.Toplevel):
         self.master_app._refresh_list()
         messagebox.showinfo("Data folder updated", f"Command Vault now stores its data in:\n{new_dir}")
 
+    def _export_vault(self):
+        default_name = f"command-vault-backup-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
+        path = filedialog.asksaveasfilename(
+            title="Export Command Vault", defaultextension=".json", initialfile=default_name,
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")])
+        if not path:
+            return
+        try:
+            # Serialize the in-memory vault rather than copying commands.json
+            # off disk -- on a brand-new install with an empty vault, no
+            # file has been written yet, and this way Export can never miss
+            # a change even if the on-disk copy were somehow stale.
+            with open(path, "w") as f:
+                json.dump(self.master_app.data, f, indent=4)
+        except OSError as e:
+            messagebox.showerror("Export failed", str(e))
+            return
+        n = len(self.master_app.data.get("commands", []))
+        messagebox.showinfo("Vault exported", f"Exported {n} command{'s' if n != 1 else ''} to:\n{path}")
+
+    def _import_vault(self):
+        path = filedialog.askopenfilename(title="Import Command Vault",
+                                           filetypes=[("JSON files", "*.json"), ("All files", "*.*")])
+        if not path:
+            return
+        try:
+            with open(path, "r") as f:
+                raw = json.load(f)
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
+            messagebox.showerror("Import failed", f"Couldn't read that file as a Command Vault export:\n{e}")
+            return
+
+        try:
+            imported = _normalize_vault_data(raw)
+        except (AttributeError, TypeError):
+            # e.g. valid JSON but not an object/list shaped like a vault
+            messagebox.showerror("Import failed", "That file doesn't look like a Command Vault export.")
+            return
+
+        current_n = len(self.master_app.data.get("commands", []))
+        new_n = len(imported.get("commands", []))
+        proceed = messagebox.askyesno(
+            "Replace current vault?",
+            f"This will replace your current vault ({current_n} command{'s' if current_n != 1 else ''}) "
+            f"with the {new_n} command{'s' if new_n != 1 else ''} from:\n{path}\n\n"
+            "Your current vault will be backed up first. Continue?")
+        if not proceed:
+            return
+
+        # Cheap insurance against importing the wrong file: back up what's
+        # about to be overwritten, same convention as the corrupted-file
+        # quarantine in load_data().
+        data_file = get_data_file()
+        if os.path.exists(data_file):
+            backup_path = f"{data_file}.pre-import-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+            try:
+                shutil.copy2(data_file, backup_path)
+            except OSError:
+                backup_path = None
+        else:
+            backup_path = None
+
+        try:
+            save_data(imported)
+        except OSError as e:
+            messagebox.showerror("Import failed", f"Couldn't write the new vault:\n{e}")
+            return
+
+        self.master_app.data = imported
+        self.master_app._refresh_categories()
+        self.master_app._refresh_list()
+        # hotkey_pynput on each entry is the live source of truth for global
+        # hotkeys, so this actually re-registers any imported entries' hotkeys.
+        self.master_app._rebuild_hotkey_listener()
+        # autostart's source of truth is an OS-level file per entry, not the
+        # JSON field, so imported entries with autostart=True need that file
+        # (re)created here or they'd show "on" in the UI without actually
+        # running at login on this machine.
+        autostart_failures = 0
+        for entry in imported.get("commands", []):
+            if entry.get("autostart"):
+                try:
+                    set_entry_autostart(entry, True)
+                except (NotImplementedError, OSError):
+                    autostart_failures += 1
+
+        msg = f"Imported {new_n} command{'s' if new_n != 1 else ''}."
+        if backup_path:
+            msg += f"\n\nYour previous vault was backed up to:\n{backup_path}"
+        if autostart_failures:
+            msg += (f"\n\n{autostart_failures} autostart entr{'y' if autostart_failures == 1 else 'ies'} "
+                     "couldn't be registered on this machine/OS and may need re-enabling manually.")
+        messagebox.showinfo("Vault imported", msg)
+
 
 # ---------------------------------------------------------------------------
 # Global hotkey: capture (local, dialog-scoped) and tray icon (for background mode)
@@ -1441,20 +1857,131 @@ def tk_keysym_to_pynput(keysym):
     return None
 
 
+TRAY_ICON_PNG_B64 = (
+    "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"
+    "gg=="
+)
+
+
 def build_tray_image(size=64):
-    """Draws the same padlock icon as packaging/icon.png, in-memory, so the
-    tray icon doesn't depend on bundling a separate asset file."""
-    img = PILImage.new("RGBA", (size, size), (0, 0, 0, 0))
-    d = PILImageDraw.Draw(img)
-    d.rounded_rectangle([0, 0, size, size], radius=size // 6, fill=(30, 30, 46, 255))
-    cx, cy = size // 2, size // 2 + size // 25
-    bw, bh = int(size * 0.5), int(size * 0.38)
-    body = [cx - bw // 2, cy - bh // 2, cx + bw // 2, cy + bh // 2]
-    d.rounded_rectangle(body, radius=size // 18, fill=(36, 36, 56, 255), outline=(137, 180, 250, 255),
-                         width=max(2, size // 26))
-    shackle = [cx - size // 6, cy - bh // 2 - size // 4, cx + size // 6, cy - bh // 2 + size // 13]
-    d.arc(shackle, start=180, end=360, fill=(137, 180, 250, 255), width=max(2, size // 20))
-    d.ellipse([cx - size // 24 - 2, cy - size // 18, cx + size // 24 + 2, cy + size // 18], fill=(137, 180, 250, 255))
+    """Decodes the app's packaging/icon.png logo (baked in as base64 below)
+    and resizes it to the requested size. Baked in rather than loaded from
+    disk because PyInstaller builds never bundle packaging/ as a data file
+    -- this keeps the tray icon self-contained the same way the earlier
+    procedurally-drawn padlock placeholder was."""
+    img = PILImage.open(io.BytesIO(base64.b64decode(TRAY_ICON_PNG_B64))).convert("RGBA")
+    if img.size != (size, size):
+        img = img.resize((size, size), PILImage.LANCZOS)
     return img
 
 
@@ -1589,6 +2116,7 @@ class CommandVault(tk.Tk):
         self.geometry("860x680")
         self.minsize(700, 520)
         self.configure(bg=COLOR_BG)
+        self._set_window_icon()
 
         self.data = load_data()
         self.selected_category = ALL_CATEGORY
@@ -1596,6 +2124,9 @@ class CommandVault(tk.Tk):
         self._main_thread_queue = queue.Queue()
         self._hotkey_listener = None
         self._tray_icon = None
+        self._instance_lock_socket = acquire_single_instance_lock(
+            lambda: self._post_to_main_thread(self._show_window)
+        )
 
         self._build_style()
         self._build_layout()
@@ -1606,6 +2137,7 @@ class CommandVault(tk.Tk):
 
         self.protocol("WM_DELETE_WINDOW", self._on_close_request)
         self._rebuild_hotkey_listener()
+        self._check_for_update_startup()
 
     # -- global hotkey / background mode ------------------------------------
     def _rebuild_hotkey_listener(self, retry_count=0):
@@ -1715,6 +2247,52 @@ class CommandVault(tk.Tk):
         self.lift()
         self.focus_force()
 
+    def _set_window_icon(self):
+        """Sets the titlebar/taskbar icon from the same baked-in logo the
+        tray icon uses. Best-effort: some platforms/WMs ignore iconphoto,
+        and PIL might not be present, so failures here are silent."""
+        if not HAVE_PIL:
+            return
+        try:
+            from PIL import ImageTk
+            self._window_icon_ref = ImageTk.PhotoImage(build_tray_image(64))
+            self.iconphoto(True, self._window_icon_ref)
+        except Exception:
+            pass
+
+    def _check_for_update_startup(self):
+        def _on_found(tag, html_url):
+            self._post_to_main_thread(lambda: self._notify_update_available(tag, html_url))
+        check_for_update(force=False, on_result=_on_found)
+
+    def _notify_update_available(self, tag, html_url):
+        # Don't nag about the same version more than once per run/day --
+        # once shown, remember it so it doesn't reappear tomorrow's cooldown
+        # cycle unless a newer tag shows up.
+        cfg = _load_config()
+        if cfg.get("dismissed_update_version") == tag:
+            return
+        self._log(f"Update available: {tag} (you have v{APP_VERSION}) -- {html_url}")
+        if messagebox.askyesno(
+                "Update available",
+                f"Command Vault {tag} is available (you have v{APP_VERSION}).\n\n"
+                f"Open the release page?"):
+            self._open_url(html_url)
+        cfg["dismissed_update_version"] = tag
+        _save_config(cfg)
+
+    @staticmethod
+    def _open_url(url):
+        try:
+            if is_windows():
+                os.startfile(url)
+            elif is_mac():
+                subprocess.Popen(["open", url])
+            else:
+                subprocess.Popen(["xdg-open", url])
+        except OSError:
+            pass
+
     def _ensure_tray_icon(self):
         if self._tray_icon:
             return True
@@ -1758,6 +2336,12 @@ class CommandVault(tk.Tk):
     def _quit_app(self):
         self._stop_hotkey_listener()
         self._stop_tray_icon()
+        if self._instance_lock_socket:
+            try:
+                self._instance_lock_socket.close()
+            except OSError:
+                pass
+            self._instance_lock_socket = None
         self.destroy()
 
     # -- styling -----------------------------------------------------------
@@ -2157,5 +2741,9 @@ class CommandVault(tk.Tk):
 
 
 if __name__ == "__main__":
+    if notify_running_instance():
+        # Another instance is already running and has been asked to raise
+        # its window -- nothing more for this process to do.
+        sys.exit(0)
     app = CommandVault()
     app.mainloop()
