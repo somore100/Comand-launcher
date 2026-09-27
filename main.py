@@ -13,6 +13,8 @@ import threading
 import queue
 import shlex
 import socket
+import secrets
+import tempfile
 import base64
 import io
 import time
@@ -529,22 +531,72 @@ def find_installed_apps():
 # Autostart + a global hotkey can each independently launch/wake an
 # instance, so nothing previously stopped two copies running at once --
 # both trying to register the same OS-level hotkeys, or both writing
-# commands.json at overlapping moments, is a real failure mode. A bound
-# TCP socket on a fixed localhost port doubles as a mutex (only one
-# process can hold the bind) and as a tiny IPC channel (a second launch
-# attempt connects, asks the first instance to raise its window, then
-# exits). 127.0.0.1-only binding avoids any firewall prompt on Windows.
-SINGLE_INSTANCE_PORT = 47812
+# commands.json at overlapping moments, is a real failure mode.
+#
+# This used to be a hardcoded TCP port (127.0.0.1:47812) doing double duty
+# as both the mutex and the IPC channel. Two problems with that: (1) if
+# binding failed for any OTHER reason -- something unrelated already using
+# that port, security software, a stale reservation -- the app just
+# proceeded unlocked, silently allowing two full instances to run at once;
+# and (2) the port was fixed and unauthenticated, so any local process --
+# including another user's, on a shared machine -- could connect and
+# trigger the window to pop up, since nothing proved the caller was
+# actually another launch of Command Vault.
+#
+# Now an OS-level exclusive file lock is the actual source of truth for
+# "am I the only instance" -- it doesn't depend on any particular port
+# being free, and the OS releases it automatically if the process dies, so
+# a crash can never leave a stale lock behind. Whichever process wins that
+# lock opens a TCP listener on an OS-assigned ephemeral port (127.0.0.1
+# only, to avoid any firewall prompt on Windows) and publishes {port,
+# token} into the lock file, which is chmod'd to the current user only on
+# POSIX. A later launch that loses the file lock reads that info and must
+# present the matching token before the running instance will raise its
+# window; anything else (wrong token, no published info, connection
+# refused) is silently ignored.
+
+def _instance_lock_path():
+    return os.path.join(app_config_dir(), "instance.lock")
+
+
+def _lock_file_exclusive(f):
+    """Try to take a non-blocking exclusive lock on file object f. Returns
+    True if acquired, False if some other process already holds it."""
+    if is_windows():
+        import msvcrt
+        try:
+            f.seek(0)
+            msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+            return True
+        except OSError:
+            return False
+    else:
+        import fcntl
+        try:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except OSError:
+            return False
 
 
 def notify_running_instance():
     """If another instance already holds the lock, ask it to show its
     window and return True (caller should exit immediately after)."""
+    lock_path = _instance_lock_path()
+    if not os.path.exists(lock_path):
+        return False
+    try:
+        with open(lock_path, "r") as f:
+            info = json.load(f)
+        port, token = int(info["port"]), info["token"]
+    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+        return False  # no running instance has published its info (yet, or anymore)
+
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.settimeout(0.5)
-        s.connect(("127.0.0.1", SINGLE_INSTANCE_PORT))
-        s.sendall(b"SHOW\n")
+        s.connect(("127.0.0.1", port))
+        s.sendall(f"SHOW {token}\n".encode("utf-8"))
         s.close()
         return True
     except OSError:
@@ -552,39 +604,95 @@ def notify_running_instance():
 
 
 def acquire_single_instance_lock(on_show):
-    """Binds the mutex port and starts a background thread that calls
-    on_show() whenever a later launch attempt connects. Returns the
-    listening socket -- keep a reference for the app's lifetime and close
-    it on quit. Returns None if the port couldn't be bound for some other
-    reason (e.g. something else on the machine is using it); in that case
-    we simply proceed without the lock rather than blocking startup."""
-    try:
-        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 0)
-        srv.bind(("127.0.0.1", SINGLE_INSTANCE_PORT))
-        srv.listen(5)
-    except OSError:
+    """Takes the exclusive lock file, starts a background TCP server on an
+    OS-assigned port, and publishes {port, token} in the lock file for
+    later launches to find via notify_running_instance(). Calls on_show()
+    whenever a request with the correct token comes in. Returns an opaque
+    handle -- keep a reference for the app's lifetime and close it on quit
+    via release_single_instance_lock(). Returns None if another instance
+    already holds the lock (shouldn't normally happen here, since
+    notify_running_instance() is checked first in __main__, but handled
+    defensively in case of a race) or if a listening socket couldn't be
+    opened at all; in that case we simply proceed without the lock rather
+    than blocking startup."""
+    os.makedirs(app_config_dir(), exist_ok=True)
+    lock_path = _instance_lock_path()
+
+    # Opened with "a+" (not "w") so acquiring the lock never truncates a
+    # file another process might currently be reading from in
+    # notify_running_instance(); we truncate ourselves only after we know
+    # we hold the lock. Kept open for the app's whole lifetime.
+    lock_file = open(lock_path, "a+")
+    if not _lock_file_exclusive(lock_file):
+        lock_file.close()
         return None
 
+    if not is_windows():
+        try:
+            os.chmod(lock_path, 0o600)
+        except OSError:
+            pass
+
+    try:
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv.bind(("127.0.0.1", 0))  # OS picks a free ephemeral port
+        srv.listen(5)
+        port = srv.getsockname()[1]
+    except OSError:
+        lock_file.close()
+        return None
+
+    token = secrets.token_hex(16)
+    lock_file.seek(0)
+    lock_file.truncate()
+    json.dump({"port": port, "token": token}, lock_file)
+    lock_file.flush()
+
     def _serve():
+        expected = f"SHOW {token}".encode("utf-8")
         while True:
             try:
                 conn, _ = srv.accept()
             except OSError:
                 return  # socket was closed (app shutting down)
             try:
-                conn.recv(16)
+                data = conn.recv(256)
             except OSError:
-                pass
+                data = b""
             finally:
                 try:
                     conn.close()
                 except OSError:
                     pass
-            on_show()
+            if data.strip() == expected:
+                on_show()
 
     threading.Thread(target=_serve, daemon=True).start()
-    return srv
+    return (srv, lock_file)
+
+
+def release_single_instance_lock(handle):
+    """Closes the listening socket and the lock file (which also releases
+    the OS-level file lock), and best-effort removes the lock file so a
+    dead port/token isn't left around for the next launch to trip over --
+    though notify_running_instance() already handles a stale file safely
+    (a refused connection just means "no running instance", same as if
+    the file didn't exist)."""
+    if not handle:
+        return
+    srv, lock_file = handle
+    try:
+        srv.close()
+    except OSError:
+        pass
+    try:
+        lock_file.close()
+    except OSError:
+        pass
+    try:
+        os.remove(_instance_lock_path())
+    except OSError:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -633,27 +741,50 @@ def load_data():
             raw = json.load(f)
     except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
         # A partial write from a crash, a bad manual edit, or a disk issue
-        # can leave commands.json unparsable. Rather than crashing on every
-        # startup from then on, quarantine the bad file and start fresh --
-        # the vault is recoverable (existing hotkeys/autostart entries just
-        # need re-adding) but a permanently unlaunchable app is not.
+        # can leave commands.json unparsable. Quarantine the bad file, then
+        # try the .bak that save_data() keeps (the vault as of the previous
+        # save) before giving up and starting empty -- recovering silently
+        # from a good recent copy beats losing everything over one bad write.
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         quarantined = f"{data_file}.corrupted-{timestamp}"
         try:
             shutil.move(data_file, quarantined)
         except OSError:
             quarantined = None
+
+        backup_file = data_file + ".bak"
+        recovered = None
+        if os.path.exists(backup_file):
+            try:
+                with open(backup_file, "r") as f:
+                    recovered = json.load(f)
+            except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+                recovered = None
+
         try:
-            messagebox.showwarning(
-                "Command Vault",
-                "Your commands.json file appears to be corrupted and "
-                f"couldn't be read ({e}).\n\n"
-                + (f"The bad file has been saved as:\n{quarantined}\n\n"
-                   if quarantined else "")
-                + "Starting with an empty vault."
-            )
+            if recovered is not None:
+                messagebox.showwarning(
+                    "Command Vault",
+                    "Your commands.json file appears to be corrupted and "
+                    f"couldn't be read ({e}).\n\n"
+                    + (f"The bad file has been saved as:\n{quarantined}\n\n"
+                       if quarantined else "")
+                    + "Recovered your vault from the most recent backup instead."
+                )
+            else:
+                messagebox.showwarning(
+                    "Command Vault",
+                    "Your commands.json file appears to be corrupted and "
+                    f"couldn't be read ({e}).\n\n"
+                    + (f"The bad file has been saved as:\n{quarantined}\n\n"
+                       if quarantined else "")
+                    + "No usable backup was found either. Starting with an empty vault."
+                )
         except tk.TclError:
             pass  # no Tk root yet (e.g. called before mainloop is set up)
+
+        if recovered is not None:
+            return _normalize_vault_data(recovered)
         return {"categories": [], "commands": [], "settings": {}}
 
     return _normalize_vault_data(raw)
@@ -676,8 +807,39 @@ def _blank_entry(name="", command=""):
 
 
 def save_data(data):
-    with open(get_data_file(), "w") as f:
-        json.dump(data, f, indent=4)
+    """Writes commands.json atomically: serialize to a temp file in the same
+    directory, fsync it, then os.replace() it into place. os.replace() is
+    atomic on both POSIX and Windows, so a crash or power loss can only ever
+    leave the OLD file intact or the NEW file fully written -- never a
+    half-written commands.json. Before that swap, the previous good file
+    (if any) is copied to commands.json.bak, as a second line of defense
+    independent of Export/Import.
+
+    Keep this atomic. Do not go back to a plain open(..., "w") here -- that
+    reintroduces the exact corruption case _normalize_vault_data's caller
+    (load_data) has to quarantine and recover from."""
+    data_file = get_data_file()
+
+    if os.path.exists(data_file):
+        try:
+            shutil.copy2(data_file, data_file + ".bak")
+        except OSError:
+            pass  # best-effort; don't block saving over a backup failure
+
+    data_dir = os.path.dirname(data_file) or "."
+    fd, tmp_path = tempfile.mkstemp(prefix=".commands-", suffix=".json.tmp", dir=data_dir)
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f, indent=4)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, data_file)
+    except Exception:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -2124,7 +2286,7 @@ class CommandVault(tk.Tk):
         self._main_thread_queue = queue.Queue()
         self._hotkey_listener = None
         self._tray_icon = None
-        self._instance_lock_socket = acquire_single_instance_lock(
+        self._instance_lock_handle = acquire_single_instance_lock(
             lambda: self._post_to_main_thread(self._show_window)
         )
 
@@ -2336,12 +2498,8 @@ class CommandVault(tk.Tk):
     def _quit_app(self):
         self._stop_hotkey_listener()
         self._stop_tray_icon()
-        if self._instance_lock_socket:
-            try:
-                self._instance_lock_socket.close()
-            except OSError:
-                pass
-            self._instance_lock_socket = None
+        release_single_instance_lock(self._instance_lock_handle)
+        self._instance_lock_handle = None
         self.destroy()
 
     # -- styling -----------------------------------------------------------

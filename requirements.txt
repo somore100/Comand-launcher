@@ -9,3 +9,6 @@ pystray
 
 # Only needed to build standalone binaries:
 pyinstaller
+
+# Only needed to run the test suite (tests/):
+pytest
