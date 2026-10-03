@@ -69,6 +69,7 @@ FONT_MONO = ("Consolas", 10) if platform.system() == "Windows" else ("DejaVu San
 DEFAULT_ICON = "\U0001F4E6"  # package
 ALL_CATEGORY = "All"
 UNCATEGORIZED = "Uncategorized"
+SCHEDULE_TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")  # 24h "HH:MM"
 
 EMOJI_CHOICES = [
     "\U0001F680", "\u2699\uFE0F", "\U0001F527", "\U0001F6E0\uFE0F", "\U0001F4BB", "\U0001F5A5\uFE0F",
@@ -466,6 +467,183 @@ def set_entry_autostart(entry, enabled):
 
 
 # ---------------------------------------------------------------------------
+# Per-entry scheduling (run daily or on chosen weekdays, at a specific time)
+# ---------------------------------------------------------------------------
+# Same philosophy as autostart above: generate a small, self-contained
+# wrapper script per entry and register it with whatever OS mechanism
+# actually runs unattended jobs, rather than depending on Command Vault's
+# own process being open at the scheduled moment -- an in-app timer loop
+# would only fire while the app/tray happens to be running, which quietly
+# defeats the point for anything meant to run overnight. Linux and macOS
+# both ship `cron`, so one codepath covers both; Windows uses Task
+# Scheduler (`schtasks`).
+#
+# On Linux/macOS this reads and rewrites the user's crontab -- but never
+# wholesale. Every line Command Vault adds carries a unique per-entry
+# marker comment at the end (`# command-vault-schedule:<id>`), and the
+# read/modify/write cycle only ever touches lines carrying that marker,
+# leaving every other line in the user's crontab -- their own jobs --
+# untouched. (A trailing `#...` on a cron job line is itself just a shell
+# comment to whatever runs the command, so it's inert at execution time
+# and only serves as a tag for us to find our own line again later.)
+
+CRON_WEEKDAY_CODES = {"SU": 0, "MO": 1, "TU": 2, "WE": 3, "TH": 4, "FR": 5, "SA": 6}
+SCHEDULE_WEEKDAYS = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"]
+
+
+def linux_schedule_scripts_dir():
+    d = os.path.expanduser("~/.config/command-vault/schedule-scripts")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def windows_schedule_scripts_dir():
+    appdata = os.getenv("APPDATA", "")
+    d = os.path.join(appdata, "CommandVault", "schedule-scripts")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _cron_marker(entry_id):
+    return f"# command-vault-schedule:{entry_id}"
+
+
+def _build_cron_schedule_line(entry, script_path):
+    """Pure line-building, kept separate from subprocess/crontab I/O so it's
+    unit-testable without a real cron installation. schedule_days uses the
+    same "empty list = every day" convention as the rest of the app."""
+    hh, mm = entry["schedule_time"].split(":")
+    days = entry.get("schedule_days") or []
+    dow = ",".join(str(CRON_WEEKDAY_CODES[d]) for d in days) if days else "*"
+    return f'{int(mm)} {int(hh)} * * {dow} bash "{script_path}" {_cron_marker(entry["id"])}'
+
+
+def _cron_lines_without_marker(lines, entry_id):
+    """Pure filter: every crontab line EXCEPT the one (if any) owned by this
+    entry. Used both to remove a schedule and, remove-then-append, to
+    replace one -- so an edited schedule never leaves a stale second line
+    for the same entry behind."""
+    marker = _cron_marker(entry_id)
+    return [line for line in lines if marker not in line]
+
+
+def _schtasks_create_args(entry, script_path):
+    """Pure arg-list building for the Windows Task Scheduler path, kept
+    separate from subprocess.run so the args themselves are testable on
+    any OS even though schtasks itself only exists on Windows."""
+    hh, mm = entry["schedule_time"].split(":")
+    days = entry.get("schedule_days") or []
+    task_name = f"CommandVault-{entry['id']}"
+    base = ["schtasks", "/create", "/tn", task_name, "/tr", f'"{script_path}"', "/f"]
+    if days:
+        return base + ["/sc", "WEEKLY", "/d", ",".join(days), "/st", f"{hh}:{mm}"]
+    return base + ["/sc", "DAILY", "/st", f"{hh}:{mm}"]
+
+
+def _read_crontab_lines():
+    """Returns (lines, crontab_available). crontab_available is False only
+    if the `crontab` command itself couldn't be run at all (not installed)
+    -- distinct from "no crontab for this user yet", which is a normal
+    empty starting point, not an error, and still returns True."""
+    try:
+        result = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
+    except OSError:
+        return [], False
+    if result.returncode != 0:
+        return [], True  # typically "no crontab for <user>" -- fine, empty is correct
+    return result.stdout.splitlines(), True
+
+
+def _write_crontab_lines(lines):
+    try:
+        text = "\n".join(lines)
+        if text:
+            text += "\n"
+        subprocess.run(["crontab", "-"], input=text, text=True, check=True)
+        return True
+    except (OSError, subprocess.CalledProcessError):
+        return False
+
+
+def entry_schedule_registered(entry_id):
+    """Whether entry_id currently has a schedule actually registered with
+    the OS -- the source of truth, the same role entry_autostart_enabled()
+    plays for autostart, independent of the schedule_enabled JSON field
+    (which just records what the dialog last showed)."""
+    if is_windows():
+        try:
+            result = subprocess.run(
+                ["schtasks", "/query", "/tn", f"CommandVault-{entry_id}"],
+                capture_output=True, text=True
+            )
+            return result.returncode == 0
+        except OSError:
+            return False
+    lines, available = _read_crontab_lines()
+    if not available:
+        return False
+    return any(_cron_marker(entry_id) in line for line in lines)
+
+
+def set_entry_schedule(entry, enabled):
+    entry_id = entry["id"]
+
+    if is_windows():
+        task_name = f"CommandVault-{entry_id}"
+        script_path = os.path.join(windows_schedule_scripts_dir(), f"cv-{entry_id}.bat")
+        if not enabled:
+            subprocess.run(["schtasks", "/delete", "/tn", task_name, "/f"], capture_output=True)
+            if os.path.exists(script_path):
+                os.remove(script_path)
+            return
+
+        exec_cmd = resolve_exec_command(entry["command"])
+        working_dir = entry.get("working_dir") or ""
+        cd_part = f'cd /d "{working_dir}"\n' if working_dir else ""
+        with open(script_path, "w") as f:
+            f.write(f"@echo off\n{cd_part}{exec_cmd}\n")
+
+        try:
+            subprocess.run(_schtasks_create_args(entry, script_path), check=True, capture_output=True)
+        except (OSError, subprocess.CalledProcessError) as e:
+            raise RuntimeError(f"Couldn't register the scheduled task: {e}") from e
+        return
+
+    # Linux / macOS, via cron
+    script_path = os.path.join(linux_schedule_scripts_dir(), f"cv-{entry_id}.sh")
+    if not enabled:
+        if os.path.exists(script_path):
+            os.remove(script_path)
+        lines, available = _read_crontab_lines()
+        if not available:
+            return
+        new_lines = _cron_lines_without_marker(lines, entry_id)
+        if new_lines != lines:
+            _write_crontab_lines(new_lines)
+        return
+
+    exec_cmd = resolve_exec_command(entry["command"])
+    working_dir = entry.get("working_dir") or ""
+    body = ["#!/bin/bash"]
+    if working_dir:
+        body.append(f'cd "{working_dir}" || exit 1')
+    body.append(exec_cmd)
+    with open(script_path, "w") as f:
+        f.write("\n".join(body) + "\n")
+    os.chmod(script_path, 0o755)
+
+    lines, available = _read_crontab_lines()
+    if not available:
+        raise NotImplementedError(
+            "Scheduling needs the 'crontab' command, which isn't available on this system."
+        )
+    lines = _cron_lines_without_marker(lines, entry_id)
+    lines.append(_build_cron_schedule_line(entry, script_path))
+    if not _write_crontab_lines(lines):
+        raise RuntimeError("Couldn't update the crontab. Check that cron is set up for your user.")
+
+
+# ---------------------------------------------------------------------------
 # Installed-app discovery (for "Pick Installed App")
 # ---------------------------------------------------------------------------
 def find_linux_apps():
@@ -727,6 +905,9 @@ def _normalize_vault_data(raw):
         cmd.setdefault("autostart", False)
         cmd.setdefault("hotkey_display", "")
         cmd.setdefault("hotkey_pynput", "")
+        cmd.setdefault("schedule_enabled", False)
+        cmd.setdefault("schedule_days", [])  # empty list means "every day"
+        cmd.setdefault("schedule_time", "")  # "HH:MM", 24h
     return raw
 
 
@@ -803,6 +984,9 @@ def _blank_entry(name="", command=""):
         "autostart": False,
         "hotkey_display": "",
         "hotkey_pynput": "",
+        "schedule_enabled": False,
+        "schedule_days": [],
+        "schedule_time": "",
     }
 
 
@@ -1397,6 +1581,42 @@ class EntryDialog(tk.Toplevel):
                  bg=COLOR_BG, fg=COLOR_SUBTEXT, font=("Segoe UI", 8), wraplength=380, justify="left"
                  ).pack(anchor="w")
 
+        # Scheduled run (daily, or on chosen weekdays, at a specific time)
+        self.schedule_enabled_var = tk.BooleanVar(
+            value=entry.get("schedule_enabled", False) if entry else False
+        )
+        self.schedule_time_var = tk.StringVar(
+            value=(entry.get("schedule_time") or "09:00") if entry else "09:00"
+        )
+        existing_days = set(entry.get("schedule_days") or []) if entry else set()
+        self.schedule_day_vars = {d: tk.BooleanVar(value=(d in existing_days)) for d in SCHEDULE_WEEKDAYS}
+
+        schedule_frame = tk.Frame(self, bg=COLOR_BG)
+        schedule_frame.grid(row=15, column=0, columnspan=2, sticky="w", padx=16, pady=(4, 10))
+        tk.Checkbutton(schedule_frame, text="Run on a schedule", variable=self.schedule_enabled_var,
+                        bg=COLOR_BG, fg=COLOR_TEXT, selectcolor=COLOR_PANEL, activebackground=COLOR_BG,
+                        activeforeground=COLOR_TEXT, font=FONT_SMALL).pack(anchor="w")
+
+        time_row = tk.Frame(schedule_frame, bg=COLOR_BG)
+        time_row.pack(anchor="w", pady=(2, 0))
+        tk.Label(time_row, text="Time (24h):", bg=COLOR_BG, fg=COLOR_SUBTEXT, font=FONT_SMALL).pack(side="left")
+        tk.Entry(time_row, textvariable=self.schedule_time_var, width=6, font=FONT_NORMAL, bg=COLOR_PANEL,
+                  fg=COLOR_TEXT, insertbackground=COLOR_TEXT, relief="flat").pack(side="left", padx=(6, 0))
+
+        days_row = tk.Frame(schedule_frame, bg=COLOR_BG)
+        days_row.pack(anchor="w", pady=(4, 0))
+        for d in SCHEDULE_WEEKDAYS:
+            tk.Checkbutton(days_row, text=d, variable=self.schedule_day_vars[d], bg=COLOR_BG, fg=COLOR_TEXT,
+                            selectcolor=COLOR_PANEL, activebackground=COLOR_BG, activeforeground=COLOR_TEXT,
+                            font=("Segoe UI", 8)).pack(side="left")
+
+        tk.Label(schedule_frame,
+                 text="Leave all days unchecked to run every day. Runs via the OS scheduler \u2014 works even "
+                      "if Command Vault isn't open \u2014 and always runs silently in the background, "
+                      "regardless of Run Mode above (there's no terminal to open at an unattended run).",
+                 bg=COLOR_BG, fg=COLOR_SUBTEXT, font=("Segoe UI", 8), wraplength=380, justify="left"
+                 ).pack(anchor="w", pady=(4, 0))
+
         # Launch shortcut (optional, needs pynput)
         self.entry_hotkey_pynput = entry.get("hotkey_pynput", "") if entry else ""
         self.entry_hotkey_display_var = tk.StringVar(
@@ -1404,7 +1624,7 @@ class EntryDialog(tk.Toplevel):
         )
         if HAVE_PYNPUT:
             hotkey_frame = tk.Frame(self, bg=COLOR_BG)
-            hotkey_frame.grid(row=15, column=0, columnspan=2, sticky="w", padx=16, pady=(0, 10))
+            hotkey_frame.grid(row=16, column=0, columnspan=2, sticky="w", padx=16, pady=(0, 10))
             tk.Label(hotkey_frame, text="Launch Shortcut (optional)", bg=COLOR_BG, fg=COLOR_SUBTEXT,
                      font=FONT_SMALL, anchor="w").pack(anchor="w")
             row = tk.Frame(hotkey_frame, bg=COLOR_BG)
@@ -1419,9 +1639,9 @@ class EntryDialog(tk.Toplevel):
                                          "closed \u2014 needs an X11 session on Linux.",
                      bg=COLOR_BG, fg=COLOR_SUBTEXT, font=("Segoe UI", 8), wraplength=380, justify="left"
                      ).pack(anchor="w", pady=(2, 0))
-            buttons_row = 16
+            buttons_row = 17
         else:
-            buttons_row = 15
+            buttons_row = 16
 
         # Buttons
         btn_frame = tk.Frame(self, bg=COLOR_BG)
@@ -1526,6 +1746,16 @@ class EntryDialog(tk.Toplevel):
         category = self.category_var.get().strip() or UNCATEGORIZED
         icon = self.icon_var.get().strip() or DEFAULT_ICON
 
+        schedule_enabled = bool(self.schedule_enabled_var.get())
+        schedule_time = self.schedule_time_var.get().strip()
+        if schedule_enabled and not SCHEDULE_TIME_RE.match(schedule_time):
+            messagebox.showwarning(
+                "Invalid time",
+                "Schedule time must be in 24-hour HH:MM format, e.g. 09:00 or 18:30."
+            )
+            return
+        schedule_days = [d for d in SCHEDULE_WEEKDAYS if self.schedule_day_vars[d].get()]
+
         self.result = {
             "id": self.entry["id"] if self.entry else str(uuid.uuid4()),
             "name": name,
@@ -1538,6 +1768,9 @@ class EntryDialog(tk.Toplevel):
             "autostart": bool(self.autostart_var.get()),
             "hotkey_display": self.entry_hotkey_display_var.get() if self.entry_hotkey_pynput else "",
             "hotkey_pynput": self.entry_hotkey_pynput,
+            "schedule_enabled": schedule_enabled,
+            "schedule_days": schedule_days,
+            "schedule_time": schedule_time,
         }
         self.destroy()
 
@@ -2565,18 +2798,20 @@ class CommandVault(tk.Tk):
         list_frame = tk.Frame(main, bg=COLOR_BG)
         list_frame.pack(fill="both", expand=True, padx=20, pady=(0, 10))
 
-        columns = ("icon", "name", "category", "mode", "boot")
+        columns = ("icon", "name", "category", "mode", "boot", "schedule")
         self.tree = ttk.Treeview(list_frame, columns=columns, show="headings", selectmode="browse")
         self.tree.heading("icon", text="")
         self.tree.heading("name", text="Name")
         self.tree.heading("category", text="Category")
         self.tree.heading("mode", text="Mode")
         self.tree.heading("boot", text="Boot")
+        self.tree.heading("schedule", text="Sched")
         self.tree.column("icon", width=40, anchor="center", stretch=False)
         self.tree.column("name", width=300, anchor="w")
         self.tree.column("category", width=130, anchor="w")
         self.tree.column("mode", width=130, anchor="center")
         self.tree.column("boot", width=50, anchor="center", stretch=False)
+        self.tree.column("schedule", width=70, anchor="center", stretch=False)
         self.tree.pack(side="left", fill="both", expand=True)
         self.tree.bind("<Double-1>", lambda e: self._run_selected())
 
@@ -2767,10 +3002,11 @@ class CommandVault(tk.Tk):
             if cmd.get("entry_type") == "appimage":
                 mode_label += " \u00b7 AppImage"
             boot_label = "\u2713" if cmd.get("autostart") else ""
+            schedule_label = cmd.get("schedule_time", "") if cmd.get("schedule_enabled") else ""
             tag = "even" if i % 2 else "odd"
             self.tree.insert("", tk.END, iid=cmd["id"],
                               values=(cmd.get("icon", DEFAULT_ICON), cmd["name"], cmd["category"], mode_label,
-                                      boot_label),
+                                      boot_label, schedule_label),
                               tags=(tag,))
         self._update_run_all_label(len(visible))
 
@@ -2843,6 +3079,20 @@ class CommandVault(tk.Tk):
         except NotImplementedError as e:
             messagebox.showwarning("Not supported", str(e))
 
+    def _apply_schedule(self, entry):
+        if entry.get("schedule_enabled") and extract_placeholders(entry.get("command", "")):
+            messagebox.showwarning(
+                "Heads up",
+                f'"{entry["name"]}" uses {{{{placeholders}}}} that need values filled in each run.\n\n'
+                "A scheduled run has no one to prompt either, so it will run with the literal "
+                "{{name}} text still in it and likely fail. Consider removing the "
+                "placeholders for scheduled entries, or leaving the schedule off for this one."
+            )
+        try:
+            set_entry_schedule(entry, entry.get("schedule_enabled", False))
+        except (NotImplementedError, RuntimeError) as e:
+            messagebox.showwarning("Scheduling failed", str(e))
+
     def _add_entry(self):
         dialog = EntryDialog(self, self._known_categories())
         self.wait_window(dialog)
@@ -2852,6 +3102,7 @@ class CommandVault(tk.Tk):
                 self.data["categories"].append(dialog.result["category"])
             save_data(self.data)
             self._apply_autostart(dialog.result)
+            self._apply_schedule(dialog.result)
             self._rebuild_hotkey_listener()
             self._refresh_categories()
             self._refresh_list()
@@ -2870,6 +3121,7 @@ class CommandVault(tk.Tk):
                 self.data["categories"].append(dialog.result["category"])
             save_data(self.data)
             self._apply_autostart(dialog.result)
+            self._apply_schedule(dialog.result)
             self._rebuild_hotkey_listener()
             self._refresh_categories()
             self._refresh_list()
@@ -2885,6 +3137,10 @@ class CommandVault(tk.Tk):
             try:
                 set_entry_autostart(entry, False)
             except NotImplementedError:
+                pass
+            try:
+                set_entry_schedule(entry, False)
+            except (NotImplementedError, RuntimeError):
                 pass
             self._rebuild_hotkey_listener()
             self._refresh_categories()

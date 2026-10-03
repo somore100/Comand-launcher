@@ -12,3 +12,9 @@ pyinstaller
 
 # Only needed to run the test suite (tests/):
 pytest
+
+# Scheduling (Settings -> an entry's "Run on a schedule") has no pip
+# dependency -- it shells out to `crontab` on Linux/macOS (normally
+# preinstalled; on minimal/container Linux installs you may need your
+# distro's `cron` package) and to Windows's built-in Task Scheduler
+# (`schtasks`, always present) on Windows.
