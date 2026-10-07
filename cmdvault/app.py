@@ -9,6 +9,8 @@ import tkinter as tk
 from tkinter import ttk
 from .compat import pynput_keyboard, HAVE_PYNPUT, HAVE_PIL, pystray, HAVE_PYSTRAY
 from .autostart import set_entry_autostart
+from .runlog_dialog import RunLogDialog
+from .runstatus import read_run_status
 from .browser import browser_profile_path
 from .config import APP_VERSION
 from .data import _load_config, _save_config, load_data, save_data
@@ -51,6 +53,8 @@ class CommandVault(tk.Tk):
         self._refresh_list()
         self.after(150, self._drain_log_queue)
         self._log("Command Vault ready.")
+        self._seen_run_status = {}
+        self._poll_run_status()
 
         self.protocol("WM_DELETE_WINDOW", self._on_close_request)
         self._rebuild_hotkey_listener()
@@ -333,7 +337,7 @@ class CommandVault(tk.Tk):
         self.tree.column("category", width=130, anchor="w")
         self.tree.column("mode", width=130, anchor="center")
         self.tree.column("boot", width=50, anchor="center", stretch=False)
-        self.tree.column("schedule", width=70, anchor="center", stretch=False)
+        self.tree.column("schedule", width=80, anchor="center", stretch=False)
         self.tree.pack(side="left", fill="both", expand=True)
         self.tree.bind("<Double-1>", lambda e: self._run_selected())
 
@@ -343,6 +347,7 @@ class CommandVault(tk.Tk):
 
         self.tree.tag_configure("odd", background=COLOR_PANEL)
         self.tree.tag_configure("even", background=COLOR_ROW_ALT)
+        self.tree.tag_configure("failed", foreground=COLOR_RED)
 
         action_bar = tk.Frame(main, bg=COLOR_BG)
         action_bar.pack(fill="x", padx=20, pady=(0, 10))
@@ -354,6 +359,8 @@ class CommandVault(tk.Tk):
                                          relief="flat", padx=16, pady=6)
         self.run_all_button.pack(side="left", padx=(8, 0))
         tk.Button(action_bar, text="Edit", command=self._edit_selected, bg=COLOR_PANEL, fg=COLOR_TEXT,
+                  font=FONT_NORMAL, relief="flat", padx=16, pady=6).pack(side="left", padx=(8, 0))
+        tk.Button(action_bar, text="Last run", command=self._show_last_run, bg=COLOR_PANEL, fg=COLOR_TEXT,
                   font=FONT_NORMAL, relief="flat", padx=16, pady=6).pack(side="left", padx=(8, 0))
         tk.Button(action_bar, text="Delete", command=self._delete_selected, bg=COLOR_PANEL, fg=COLOR_RED,
                   font=FONT_NORMAL, relief="flat", padx=16, pady=6).pack(side="left", padx=(8, 0))
@@ -525,11 +532,16 @@ class CommandVault(tk.Tk):
                 mode_label += " \u00b7 AppImage"
             boot_label = "\u2713" if cmd.get("autostart") else ""
             schedule_label = cmd.get("schedule_time", "") if cmd.get("schedule_enabled") else ""
-            tag = "even" if i % 2 else "odd"
+            tags = ["even" if i % 2 else "odd"]
+            if cmd.get("schedule_enabled"):
+                run_status = read_run_status(cmd["id"])
+                if run_status and run_status["failed"]:
+                    schedule_label += " \u26A0"
+                    tags.append("failed")
             self.tree.insert("", tk.END, iid=cmd["id"],
                               values=(cmd.get("icon", DEFAULT_ICON), cmd["name"], cmd["category"], mode_label,
                                       boot_label, schedule_label),
-                              tags=(tag,))
+                              tags=tuple(tags))
         self._update_run_all_label(len(visible))
 
     def _update_run_all_label(self, count):
@@ -672,6 +684,41 @@ class CommandVault(tk.Tk):
             self._rebuild_hotkey_listener()
             self._refresh_categories()
             self._refresh_list()
+
+    def _show_last_run(self):
+        entry = self._get_selected_entry()
+        if not entry:
+            messagebox.showinfo("No selection", "Select an entry first.")
+            return
+        RunLogDialog(self, entry)
+
+    def _poll_run_status(self):
+        """Every 30s, look for scheduled runs that finished since we last
+        looked. Failures (and recoveries) go to the console and the list
+        gets re-rendered, so a broken unattended bot doesn't stay silent.
+        The first pass also reports anything that failed while the app was
+        closed."""
+        changed = False
+        for cmd in self.data["commands"]:
+            if not cmd.get("schedule_enabled"):
+                continue
+            st = read_run_status(cmd["id"])
+            if st is None:
+                continue
+            prev = self._seen_run_status.get(cmd["id"])
+            if prev is not None and prev["mtime"] == st["mtime"]:
+                continue
+            self._seen_run_status[cmd["id"]] = st
+            changed = True
+            name = cmd.get("name", "entry")
+            if st["failed"]:
+                self._log(f'\u26A0 Scheduled run of "{name}" failed (exit code {st["exit_code"]}) '
+                          f'at {st["when"]} \u2014 select it and click "Last run" to see the output.')
+            elif prev is not None and prev["failed"]:
+                self._log(f'\u2713 Scheduled run of "{name}" succeeded again at {st["when"]}.')
+        if changed:
+            self._refresh_list()
+        self.after(30000, self._poll_run_status)
 
     def _run_selected(self):
         entry = self._get_selected_entry()

@@ -1,1 +1,0 @@
-"""Command Vault application package."""

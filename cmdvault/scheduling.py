@@ -4,6 +4,7 @@ import subprocess
 from .browser import browser_env_line
 from .execution import resolve_exec_command
 from .platform_utils import is_windows
+from .runstatus import clear_run_status, posix_status_wrapper, windows_status_wrapper
 
 
 # Per-entry scheduling (run daily or on chosen weekdays, at a specific time)
@@ -134,15 +135,20 @@ def set_entry_schedule(entry, enabled):
             subprocess.run(["schtasks", "/delete", "/tn", task_name, "/f"], capture_output=True)
             if os.path.exists(script_path):
                 os.remove(script_path)
+            clear_run_status(entry_id)
             return
 
         exec_cmd = resolve_exec_command(entry["command"])
         working_dir = entry.get("working_dir") or ""
-        cd_part = f'cd /d "{working_dir}"\n' if working_dir else ""
+        body = []
+        if working_dir:
+            body.append(f'cd /d "{working_dir}"')
         env_line = browser_env_line(entry)
-        cd_part += env_line + "\n" if env_line else ""
+        if env_line:
+            body.append(env_line)
+        body.append(f"call {exec_cmd}")
         with open(script_path, "w") as f:
-            f.write(f"@echo off\n{cd_part}{exec_cmd}\n")
+            f.write("@echo off\n" + "\n".join(windows_status_wrapper(entry_id, body)) + "\n")
 
         try:
             subprocess.run(_schtasks_create_args(entry, script_path), check=True, capture_output=True)
@@ -155,6 +161,7 @@ def set_entry_schedule(entry, enabled):
     if not enabled:
         if os.path.exists(script_path):
             os.remove(script_path)
+        clear_run_status(entry_id)
         lines, available = _read_crontab_lines()
         if not available:
             return
@@ -165,7 +172,7 @@ def set_entry_schedule(entry, enabled):
 
     exec_cmd = resolve_exec_command(entry["command"])
     working_dir = entry.get("working_dir") or ""
-    body = ["#!/bin/bash"]
+    body = []
     if working_dir:
         body.append(f'cd "{working_dir}" || exit 1')
     env_line = browser_env_line(entry)
@@ -173,7 +180,7 @@ def set_entry_schedule(entry, enabled):
         body.append(env_line)
     body.append(exec_cmd)
     with open(script_path, "w") as f:
-        f.write("\n".join(body) + "\n")
+        f.write("\n".join(["#!/bin/bash"] + posix_status_wrapper(entry_id, body)) + "\n")
     os.chmod(script_path, 0o755)
 
     lines, available = _read_crontab_lines()

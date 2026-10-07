@@ -519,3 +519,101 @@ def test_schedule_script_includes_profile_export(tmp_path, monkeypatch):
     script = (tmp_path / "cv-sched1.sh").read_text()
     assert "export COMMAND_VAULT_BROWSER_PROFILE=" in script
     assert script.index("export COMMAND_VAULT_BROWSER_PROFILE") < script.index("bot.py")
+
+
+# ---------------------------------------------------------------------------
+# Scheduled-run status (exit codes surfaced instead of failing silently)
+# ---------------------------------------------------------------------------
+from cmdvault import runstatus as cv_runstatus  # noqa: E402
+
+
+@pytest.fixture
+def status_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr(cv_runstatus, "app_config_dir", lambda: str(tmp_path / "cfg"))
+    return tmp_path / "cfg" / "run-status"
+
+
+def _run_wrapper(tmp_path, entry_id, body):
+    import subprocess
+    script = tmp_path / "w.sh"
+    script.write_text("\n".join(["#!/bin/bash"] + cv_runstatus.posix_status_wrapper(entry_id, body)) + "\n")
+    return subprocess.run(["bash", str(script)]).returncode
+
+
+def test_no_status_file_means_none(status_dir):
+    assert cv_runstatus.read_run_status("nope") is None
+    assert cv_runstatus.read_run_log_tail("nope") == ""
+
+
+@pytest.mark.skipif(os.name == "nt", reason="bash wrapper")
+def test_wrapper_records_success(tmp_path, status_dir):
+    rc = _run_wrapper(tmp_path, "e1", ["echo hello"])
+    st = cv_runstatus.read_run_status("e1")
+    assert rc == 0 and st["exit_code"] == 0 and st["failed"] is False and st["when"]
+    assert "hello" in cv_runstatus.read_run_log_tail("e1")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="bash wrapper")
+def test_wrapper_records_failure_and_stderr(tmp_path, status_dir):
+    rc = _run_wrapper(tmp_path, "e2", ["echo boom >&2", "false"])
+    st = cv_runstatus.read_run_status("e2")
+    assert rc == 1 and st["failed"] is True and st["exit_code"] == 1
+    assert "boom" in cv_runstatus.read_run_log_tail("e2")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="bash wrapper")
+def test_wrapper_records_explicit_exit_inside_body(tmp_path, status_dir):
+    # an `exit 7` in the user's script must not skip the status write
+    rc = _run_wrapper(tmp_path, "e3", ["exit 7"])
+    assert rc == 7 and cv_runstatus.read_run_status("e3")["exit_code"] == 7
+
+
+@pytest.mark.skipif(os.name == "nt", reason="bash wrapper")
+def test_wrapper_records_failed_cd(tmp_path, status_dir):
+    rc = _run_wrapper(tmp_path, "e4", [f'cd "{tmp_path}/missing" || exit 1', "echo unreachable"])
+    assert rc == 1 and cv_runstatus.read_run_status("e4")["failed"] is True
+
+
+@pytest.mark.skipif(os.name == "nt", reason="bash wrapper")
+def test_log_is_trimmed_to_cap(tmp_path, status_dir):
+    _run_wrapper(tmp_path, "e5", ["head -c 200000 /dev/zero | tr '\\0' x"])
+    size = os.path.getsize(cv_runstatus.log_path("e5"))
+    assert size <= cv_runstatus.MAX_LOG_BYTES
+
+
+def test_corrupt_status_file_is_ignored(status_dir):
+    status_dir.mkdir(parents=True)
+    (status_dir / "bad.status").write_text("not a number\n")
+    assert cv_runstatus.read_run_status("bad") is None
+
+
+def test_clear_run_status_removes_both_files(status_dir):
+    status_dir.mkdir(parents=True)
+    (status_dir / "x.status").write_text("1\nnow\n")
+    (status_dir / "x.log").write_text("out")
+    cv_runstatus.clear_run_status("x")
+    assert not (status_dir / "x.status").exists() and not (status_dir / "x.log").exists()
+    cv_runstatus.clear_run_status("x")  # idempotent
+
+
+def test_windows_wrapper_shape(status_dir):
+    lines = cv_runstatus.windows_status_wrapper("e9", ["cd /d C:\\x", "call python bot.py"])
+    text = "\n".join(lines)
+    assert text.index("call :cv_body") < text.index(":cv_body\ncd /d") and "exit /b %CV_RC%" in text
+    assert lines.index(":cv_body") > lines.index("exit /b %CV_RC%")  # body can't be fallen into
+
+
+@pytest.mark.skipif(os.name == "nt", reason="posix scheduling path")
+def test_scheduled_script_end_to_end_reports_failure(tmp_path, monkeypatch, status_dir):
+    import subprocess
+    monkeypatch.setattr(cv_scheduling, "linux_schedule_scripts_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(cv_scheduling, "_read_crontab_lines", lambda: ([], True))
+    monkeypatch.setattr(cv_scheduling, "_write_crontab_lines", lambda lines: True)
+    e = cv_data._blank_entry("flaky", "echo nope >&2; exit 4")
+    e.update(id="flaky1", schedule_enabled=True, schedule_time="09:00")
+    cv_scheduling.set_entry_schedule(e, True)
+    assert subprocess.run(["bash", str(tmp_path / "cv-flaky1.sh")]).returncode == 4
+    st = cv_runstatus.read_run_status("flaky1")
+    assert st["failed"] and st["exit_code"] == 4 and "nope" in cv_runstatus.read_run_log_tail("flaky1")
+    cv_scheduling.set_entry_schedule(e, False)   # disabling clears the stale failure
+    assert cv_runstatus.read_run_status("flaky1") is None
