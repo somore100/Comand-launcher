@@ -23,6 +23,3 @@ config.json
 Thumbs.db
 .vscode/
 .idea/
-
-*.zip
-*.tar.gz

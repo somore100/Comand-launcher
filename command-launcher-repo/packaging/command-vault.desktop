@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Command Vault
+Comment=Launcher for your scripts, tools, and AppImages
+Exec=CommandVault
+Icon=command-vault
+Categories=Utility;
+Terminal=false

@@ -1,0 +1,98 @@
+name: Build macOS
+
+# Standalone workflow: same triggers as a typical release build (a version
+# tag, or a manual run), so it can either replace or run alongside your
+# existing Linux/Windows build.yml. If you'd rather have one workflow with
+# a Linux/Windows/macOS matrix, this job's steps are written so you can
+# lift the `steps:` block straight into that matrix's macOS entry.
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+jobs:
+  build-macos:
+    name: macOS (${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macos-14 runners are Apple Silicon; macos-13 are Intel. Building
+          # both means the .dmg works on either kind of Mac without users
+          # needing Rosetta -- PyInstaller doesn't cross-build, so this is
+          # the two-runner approach rather than a single --target-arch
+          # universal2 build (which would need every dependency, including
+          # pynput/pystray's compiled bits, to ship universal2 wheels).
+          - os: macos-14
+            arch: arm64
+          - os: macos-13
+            arch: x86_64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          pip install pyinstaller
+          pip install -r requirements.txt
+
+      - name: Build .app bundle
+        run: |
+          pyinstaller --windowed --noconfirm \
+            --name "Command Vault" \
+            --icon packaging/icon.icns \
+            main.py
+
+      - name: Package .dmg
+        run: |
+          STAGE=dmg-staging
+          mkdir -p "$STAGE"
+          cp -R "dist/Command Vault.app" "$STAGE/"
+          ln -s /Applications "$STAGE/Applications"
+          hdiutil create \
+            -volname "Command Vault" \
+            -srcfolder "$STAGE" \
+            -ov -format UDZO \
+            "CommandVault-macOS-${{ matrix.arch }}.dmg"
+
+      # No Apple Developer ID is configured here, so the .app is unsigned
+      # and NOT notarized. Gatekeeper will block a plain double-click on
+      # first launch (Console error is normally "*.app is damaged and
+      # can't be opened" -- that's Gatekeeper's unsigned-app message, not
+      # an actually-corrupt build). Until this build is signed and
+      # notarized with a paid Apple Developer ID (which needs secrets this
+      # workflow doesn't have), tell users to right-click -> Open the
+      # first time, or run:
+      #   xattr -cr "/Applications/Command Vault.app"
+      # Worth a line in the README's Downloads section so it isn't a
+      # surprise. Signing/notarizing is a bigger follow-up (needs a paid
+      # Apple Developer account, a signing certificate in repo secrets,
+      # and `xcrun notarytool` in this job) -- flagging it here rather
+      # than pretending this build is Gatekeeper-clean.
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CommandVault-macOS-${{ matrix.arch }}
+          path: CommandVault-macOS-${{ matrix.arch }}.dmg
+
+      # If your existing build.yml attaches Linux/Windows artifacts to the
+      # GitHub Release on a tag push, add the equivalent step here, e.g.:
+      #
+      # - name: Attach to release
+      #   if: startsWith(github.ref, 'refs/tags/')
+      #   uses: softprops/action-gh-release@v2
+      #   with:
+      #     files: CommandVault-macOS-${{ matrix.arch }}.dmg
+      #
+      # Left commented out since I can't see whether build.yml uses this
+      # action, a different one, or a manual `gh release upload` step --
+      # match whichever your existing workflow already uses instead of
+      # introducing a second pattern.
