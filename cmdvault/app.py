@@ -14,6 +14,7 @@ from .runstatus import read_run_status
 from .browser import browser_profile_path
 from .config import APP_VERSION
 from .data import _load_config, _save_config, load_data, save_data
+from .bulk_dialog import BulkAddDialog
 from .entry_dialog import EntryDialog
 from .hotkeys import build_tray_image
 from .instance import acquire_single_instance_lock, release_single_instance_lock
@@ -320,6 +321,8 @@ class CommandVault(tk.Tk):
 
         tk.Button(top_bar, text="+ Add", command=self._add_entry, bg=COLOR_ACCENT, fg=COLOR_SIDEBAR,
                   font=("Segoe UI", 10, "bold"), relief="flat", padx=14, pady=4).pack(side="left")
+        tk.Button(top_bar, text="+ Add many", command=self._add_many, bg=COLOR_PANEL, fg=COLOR_TEXT,
+                  font=("Segoe UI", 10), relief="flat", padx=12, pady=4).pack(side="left", padx=(6, 0))
 
         list_frame = tk.Frame(main, bg=COLOR_BG)
         list_frame.pack(fill="both", expand=True, padx=20, pady=(0, 10))
@@ -640,6 +643,20 @@ class CommandVault(tk.Tk):
             self._rebuild_hotkey_listener()
             self._refresh_categories()
             self._refresh_list()
+
+    def _add_many(self):
+        dialog = BulkAddDialog(self, self._known_categories())
+        self.wait_window(dialog)
+        if not dialog.result:
+            return
+        for entry in dialog.result:
+            self.data["commands"].append(entry)
+            if entry["category"] not in self.data["categories"]:
+                self.data["categories"].append(entry["category"])
+        save_data(self.data)
+        self._refresh_categories()
+        self._refresh_list()
+        self._log(f"Added {len(dialog.result)} entries.")
 
     def _edit_selected(self):
         entry = self._get_selected_entry()

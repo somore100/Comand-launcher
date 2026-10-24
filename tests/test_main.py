@@ -617,3 +617,74 @@ def test_scheduled_script_end_to_end_reports_failure(tmp_path, monkeypatch, stat
     assert st["failed"] and st["exit_code"] == 4 and "nope" in cv_runstatus.read_run_log_tail("flaky1")
     cv_scheduling.set_entry_schedule(e, False)   # disabling clears the stale failure
     assert cv_runstatus.read_run_status("flaky1") is None
+
+
+# ---------------------------------------------------------------------------
+# Bulk add ("Add many")
+# ---------------------------------------------------------------------------
+from cmdvault import bulk as cv_bulk  # noqa: E402
+
+
+@pytest.fixture
+def bot_tree(tmp_path):
+    for d in ("alpha", "beta", "my bots"):
+        (tmp_path / d).mkdir()
+        (tmp_path / d / "run.sh").write_text("#!/bin/sh\n")
+    return tmp_path
+
+
+def test_bulk_skips_blank_and_comment_lines():
+    rows = cv_bulk.parse_bulk_lines("\n# note\n  \necho hi\n")
+    assert [r["command"] for r in rows] == ["echo hi"]
+
+
+def test_bulk_names_from_parent_folder_when_filenames_clash(bot_tree):
+    text = f"{bot_tree}/alpha/run.sh\n{bot_tree}/beta/run.sh\n{bot_tree}/my bots/run.sh\n"
+    assert [r["name"] for r in cv_bulk.parse_bulk_lines(text)] == ["alpha", "beta", "my bots"]
+
+
+def test_bulk_unique_filenames_use_file_stem(bot_tree):
+    (bot_tree / "alpha" / "post.py").write_text("")
+    text = f"{bot_tree}/alpha/post.py\n{bot_tree}/beta/run.sh\n"
+    assert [r["name"] for r in cv_bulk.parse_bulk_lines(text)] == ["post", "run"]
+
+
+def test_bulk_explicit_name_wins_and_is_not_rewritten(bot_tree):
+    text = f"Mine :: {bot_tree}/alpha/run.sh\n{bot_tree}/beta/run.sh\n"
+    assert [r["name"] for r in cv_bulk.parse_bulk_lines(text)] == ["Mine", "run"]
+    assert cv_bulk.parse_bulk_lines(text)[0]["command"] == f"{bot_tree}/alpha/run.sh"
+
+
+def test_bulk_non_path_command_named_by_text_and_truncated():
+    rows = cv_bulk.parse_bulk_lines("docker compose up -d\n" + "x" * 80)
+    assert rows[0]["name"] == "docker compose up -d" and len(rows[1]["name"]) == cv_bulk.NAME_MAX_LEN
+
+
+def test_bulk_duplicate_names_get_numbered():
+    assert [r["name"] for r in cv_bulk.parse_bulk_lines("echo a\necho a\necho a")] == ["echo a", "echo a 2", "echo a 3"]
+
+
+def test_bulk_shell_pipe_is_not_mistaken_for_a_name():
+    rows = cv_bulk.parse_bulk_lines("ls | grep x")
+    assert rows[0]["command"] == "ls | grep x" and rows[0]["name"] == "ls | grep x"
+
+
+def test_bulk_tab_separates_name_for_spreadsheet_paste():
+    rows = cv_bulk.parse_bulk_lines("Backup\trsync -a src dst")
+    assert rows[0]["name"] == "Backup" and rows[0]["command"] == "rsync -a src dst"
+
+
+def test_bulk_build_entries_sets_fields_and_workdir(bot_tree):
+    rows = cv_bulk.parse_bulk_lines(f"{bot_tree}/alpha/run.sh\necho hi")
+    es = cv_bulk.build_entries(rows, "Bots", "silent", True)
+    assert [e["category"] for e in es] == ["Bots", "Bots"] and {e["run_mode"] for e in es} == {"silent"}
+    assert es[0]["working_dir"] == str(bot_tree / "alpha") and es[1]["working_dir"] == ""
+    assert len({e["id"] for e in es}) == 2
+    assert cv_bulk.build_entries(rows, "Bots", "silent", False)[0]["working_dir"] == ""
+
+
+def test_bulk_appimage_paths_become_appimage_entries(tmp_path):
+    img = tmp_path / "Tool.AppImage"
+    img.write_text("")
+    e = cv_bulk.build_entries(cv_bulk.parse_bulk_lines(str(img)), "X", "terminal", True)[0]
+    assert e["entry_type"] == "appimage" and e["name"] == "Tool"
