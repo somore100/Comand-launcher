@@ -15,6 +15,7 @@ from .config import APP_VERSION
 from .data import _load_config, _normalize_vault_data, _save_config, get_data_dir, get_data_file, load_data, save_data, set_data_dir
 from .hotkeys import AllKeybindsDialog, HotkeyRecorderDialog
 from .platform_utils import is_linux
+from .scrollframe import ScrollableBody, fit_dialog
 from .terminals import NAMED_LINUX_TERMINALS, run_entry
 from .theme import COLOR_ACCENT, COLOR_ACCENT_DIM, COLOR_BG, COLOR_PANEL, COLOR_RED, COLOR_SIDEBAR, COLOR_SUBTEXT, COLOR_TEXT, FONT_HEADING, FONT_NORMAL, FONT_SMALL
 from .updates import _version_is_newer, fetch_latest_release
@@ -28,45 +29,50 @@ class SettingsDialog(tk.Toplevel):
         self.master_app = master
         self.title("Settings")
         self.configure(bg=COLOR_BG)
-        self.resizable(False, False)
+        self.resizable(False, True)
         self.transient(master)
         self.grab_set()
+        self.bind("<Escape>", lambda e: self.destroy())
 
-        tk.Label(self, text="Settings", bg=COLOR_BG, fg=COLOR_TEXT, font=FONT_HEADING
+        scroll = ScrollableBody(self)
+        scroll.pack(fill="both", expand=True)
+        body = scroll.inner
+
+        tk.Label(body, text="Settings", bg=COLOR_BG, fg=COLOR_TEXT, font=FONT_HEADING
                  ).pack(anchor="w", padx=16, pady=(16, 8))
 
         self.autostart_var = tk.BooleanVar(value=app_autostart_enabled())
-        tk.Checkbutton(self, text="Launch Command Vault when the computer starts",
+        tk.Checkbutton(body, text="Launch Command Vault when the computer starts",
                         variable=self.autostart_var, bg=COLOR_BG, fg=COLOR_TEXT, selectcolor=COLOR_PANEL,
                         activebackground=COLOR_BG, activeforeground=COLOR_TEXT, font=FONT_NORMAL,
                         command=self._toggle_app_autostart).pack(anchor="w", padx=16)
 
         note = ("Once this is on, you can also flip \u201cRun this automatically when the computer starts\u201d "
                 "on individual entries in the Edit dialog.")
-        tk.Label(self, text=note, bg=COLOR_BG, fg=COLOR_SUBTEXT, font=FONT_SMALL, wraplength=340,
+        tk.Label(body, text=note, bg=COLOR_BG, fg=COLOR_SUBTEXT, font=FONT_SMALL, wraplength=340,
                  justify="left").pack(anchor="w", padx=16, pady=(6, 16))
 
-        tk.Frame(self, bg=COLOR_PANEL, height=1).pack(fill="x", padx=16, pady=(0, 14))
+        tk.Frame(body, bg=COLOR_PANEL, height=1).pack(fill="x", padx=16, pady=(0, 14))
 
-        tk.Label(self, text="Data Storage", bg=COLOR_BG, fg=COLOR_TEXT, font=FONT_HEADING
+        tk.Label(body, text="Data Storage", bg=COLOR_BG, fg=COLOR_TEXT, font=FONT_HEADING
                  ).pack(anchor="w", padx=16)
-        tk.Label(self, text="Your commands.json is currently stored in:", bg=COLOR_BG, fg=COLOR_SUBTEXT,
+        tk.Label(body, text="Your commands.json is currently stored in:", bg=COLOR_BG, fg=COLOR_SUBTEXT,
                  font=FONT_SMALL).pack(anchor="w", padx=16, pady=(6, 2))
 
         self.path_var = tk.StringVar(value=get_data_dir())
-        path_entry = tk.Entry(self, textvariable=self.path_var, width=44, font=("Segoe UI", 9),
+        path_entry = tk.Entry(body, textvariable=self.path_var, width=44, font=("Segoe UI", 9),
                                bg=COLOR_PANEL, fg=COLOR_SUBTEXT, relief="flat", state="readonly",
                                readonlybackground=COLOR_PANEL)
         path_entry.pack(fill="x", padx=16)
 
-        tk.Button(self, text="Change Folder...", command=self._change_folder, bg=COLOR_ACCENT_DIM,
+        tk.Button(body, text="Change Folder...", command=self._change_folder, bg=COLOR_ACCENT_DIM,
                   fg=COLOR_TEXT, relief="flat", font=FONT_SMALL, padx=10, pady=4
                   ).pack(anchor="w", padx=16, pady=(8, 4))
 
-        tk.Label(self, text="Existing data moves automatically to the new folder.", bg=COLOR_BG,
+        tk.Label(body, text="Existing data moves automatically to the new folder.", bg=COLOR_BG,
                  fg=COLOR_SUBTEXT, font=("Segoe UI", 8)).pack(anchor="w", padx=16, pady=(0, 12))
 
-        backup_row = tk.Frame(self, bg=COLOR_BG)
+        backup_row = tk.Frame(body, bg=COLOR_BG)
         backup_row.pack(anchor="w", padx=16, pady=(0, 4))
         tk.Button(backup_row, text="Export Vault...", command=self._export_vault, bg=COLOR_PANEL,
                   fg=COLOR_TEXT, relief="flat", font=FONT_SMALL, padx=10, pady=4
@@ -75,18 +81,18 @@ class SettingsDialog(tk.Toplevel):
                   fg=COLOR_TEXT, relief="flat", font=FONT_SMALL, padx=10, pady=4
                   ).pack(side="left", padx=(8, 0))
 
-        tk.Label(self, text="Export saves all your categories and commands to a single file \u2014 cheap "
+        tk.Label(body, text="Export saves all your categories and commands to a single file \u2014 cheap "
                              "insurance before big edits or moving to a new machine. Import replaces your "
                              "current vault with one from a file.",
                  bg=COLOR_BG, fg=COLOR_SUBTEXT, font=("Segoe UI", 8), wraplength=360, justify="left"
                  ).pack(anchor="w", padx=16, pady=(0, 16))
 
         if is_linux():
-            tk.Frame(self, bg=COLOR_PANEL, height=1).pack(fill="x", padx=16, pady=(0, 14))
+            tk.Frame(body, bg=COLOR_PANEL, height=1).pack(fill="x", padx=16, pady=(0, 14))
 
-            tk.Label(self, text="Terminal", bg=COLOR_BG, fg=COLOR_TEXT, font=FONT_HEADING
+            tk.Label(body, text="Terminal", bg=COLOR_BG, fg=COLOR_TEXT, font=FONT_HEADING
                      ).pack(anchor="w", padx=16)
-            tk.Label(self, text="Which terminal \"Open in Terminal\" mode uses. Auto-detect tries common "
+            tk.Label(body, text="Which terminal \"Open in Terminal\" mode uses. Auto-detect tries common "
                                  "terminals in order; pick one directly if you know what you have installed.",
                      bg=COLOR_BG, fg=COLOR_SUBTEXT, font=FONT_SMALL, wraplength=360, justify="left"
                      ).pack(anchor="w", padx=16, pady=(6, 8))
@@ -104,43 +110,43 @@ class SettingsDialog(tk.Toplevel):
                 initial = "Auto-detect"
 
             self.terminal_var = tk.StringVar(value=initial)
-            terminal_combo = ttk.Combobox(self, textvariable=self.terminal_var, values=terminal_options,
+            terminal_combo = ttk.Combobox(body, textvariable=self.terminal_var, values=terminal_options,
                                            state="readonly", width=30, font=FONT_NORMAL)
             terminal_combo.pack(anchor="w", padx=16)
             terminal_combo.bind("<<ComboboxSelected>>", lambda e: self._sync_custom_template_visibility())
 
             self.custom_template_var = tk.StringVar(value=cfg.get("custom_terminal_template", ""))
-            self.custom_template_label = tk.Label(self, text="Custom command (use %CMD% where the command goes):",
+            self.custom_template_label = tk.Label(body, text="Custom command (use %CMD% where the command goes):",
                                                     bg=COLOR_BG, fg=COLOR_SUBTEXT, font=FONT_SMALL, anchor="w")
-            self.custom_template_entry = tk.Entry(self, textvariable=self.custom_template_var, width=44,
+            self.custom_template_entry = tk.Entry(body, textvariable=self.custom_template_var, width=44,
                                                     font=("Segoe UI", 9), bg=COLOR_PANEL, fg=COLOR_TEXT,
                                                     insertbackground=COLOR_TEXT, relief="flat")
-            example = tk.Label(self, text='Example: kitty bash -c "%CMD%; exec bash"',
+            example = tk.Label(body, text='Example: kitty bash -c "%CMD%; exec bash"',
                                 bg=COLOR_BG, fg=COLOR_SUBTEXT, font=("Segoe UI", 8))
             self.custom_template_example = example
 
             self._sync_custom_template_visibility()
 
-            btn_row = tk.Frame(self, bg=COLOR_BG)
+            btn_row = tk.Frame(body, bg=COLOR_BG)
             btn_row.pack(anchor="w", padx=16, pady=(10, 16))
             tk.Button(btn_row, text="Save", command=self._save_terminal_pref, bg=COLOR_ACCENT, fg=COLOR_SIDEBAR,
                       relief="flat", font=("Segoe UI", 10, "bold"), padx=12, pady=4).pack(side="left")
             tk.Button(btn_row, text="Test", command=self._test_terminal, bg=COLOR_PANEL, fg=COLOR_TEXT,
                       relief="flat", font=FONT_SMALL, padx=12, pady=4).pack(side="left", padx=(8, 0))
 
-        tk.Frame(self, bg=COLOR_PANEL, height=1).pack(fill="x", padx=16, pady=(0, 14))
+        tk.Frame(body, bg=COLOR_PANEL, height=1).pack(fill="x", padx=16, pady=(0, 14))
 
-        tk.Label(self, text="Global Hotkey", bg=COLOR_BG, fg=COLOR_TEXT, font=FONT_HEADING
+        tk.Label(body, text="Global Hotkey", bg=COLOR_BG, fg=COLOR_TEXT, font=FONT_HEADING
                  ).pack(anchor="w", padx=16)
 
         if not HAVE_PYNPUT:
-            tk.Label(self, text="Install pynput to enable this:\npip install pynput",
+            tk.Label(body, text="Install pynput to enable this:\npip install pynput",
                      bg=COLOR_BG, fg=COLOR_SUBTEXT, font=FONT_SMALL, justify="left"
                      ).pack(anchor="w", padx=16, pady=(6, 16))
         else:
             tray_note = ("with a tray icon to reopen or quit" if HAVE_PYSTRAY else
                          "by minimizing (install pystray too for a proper tray icon instead)")
-            tk.Label(self, text=f"Press this combo anytime \u2014 even with Command Vault closed \u2014 to bring "
+            tk.Label(body, text=f"Press this combo anytime \u2014 even with Command Vault closed \u2014 to bring "
                                  f"the window back. Closing the window then keeps running in the background "
                                  f"{tray_note}.",
                      bg=COLOR_BG, fg=COLOR_SUBTEXT, font=FONT_SMALL, wraplength=360, justify="left"
@@ -149,10 +155,10 @@ class SettingsDialog(tk.Toplevel):
             cfg = _load_config()
             display = cfg.get("hotkey_display", "Not set")
             self.hotkey_display_var = tk.StringVar(value=display)
-            tk.Label(self, textvariable=self.hotkey_display_var, bg=COLOR_PANEL, fg=COLOR_ACCENT,
+            tk.Label(body, textvariable=self.hotkey_display_var, bg=COLOR_PANEL, fg=COLOR_ACCENT,
                      font=("Segoe UI", 11, "bold"), padx=10, pady=6).pack(anchor="w", padx=16, fill="x")
 
-            hk_btn_row = tk.Frame(self, bg=COLOR_BG)
+            hk_btn_row = tk.Frame(body, bg=COLOR_BG)
             hk_btn_row.pack(anchor="w", padx=16, pady=(8, 4))
             tk.Button(hk_btn_row, text="Record Shortcut...", command=self._record_hotkey, bg=COLOR_ACCENT,
                       fg=COLOR_SIDEBAR, relief="flat", font=("Segoe UI", 10, "bold"), padx=12, pady=4
@@ -163,19 +169,19 @@ class SettingsDialog(tk.Toplevel):
                       fg=COLOR_TEXT, relief="flat", font=FONT_SMALL, padx=12, pady=4).pack(side="left", padx=(8, 0))
 
             if is_linux():
-                tk.Label(self, text="Linux note: needs an X11 session. On native Wayland this generally won't "
+                tk.Label(body, text="Linux note: needs an X11 session. On native Wayland this generally won't "
                                      "trigger even while Command Vault is open and focused, since Wayland blocks "
                                      "cross-app input capture by design.",
                          bg=COLOR_BG, fg=COLOR_SUBTEXT, font=("Segoe UI", 8), wraplength=360, justify="left"
                          ).pack(anchor="w", padx=16, pady=(4, 16))
             else:
-                tk.Label(self, text="", bg=COLOR_BG).pack(pady=(0, 4))
+                tk.Label(body, text="", bg=COLOR_BG).pack(pady=(0, 4))
 
-        tk.Frame(self, bg=COLOR_PANEL, height=1).pack(fill="x", padx=16, pady=(0, 14))
+        tk.Frame(body, bg=COLOR_PANEL, height=1).pack(fill="x", padx=16, pady=(0, 14))
 
-        tk.Label(self, text="Insert Input Box Shortcut", bg=COLOR_BG, fg=COLOR_TEXT, font=FONT_HEADING
+        tk.Label(body, text="Insert Input Box Shortcut", bg=COLOR_BG, fg=COLOR_TEXT, font=FONT_HEADING
                  ).pack(anchor="w", padx=16)
-        tk.Label(self, text="Used inside the command box in Add/Edit Entry to insert a {{name}} placeholder "
+        tk.Label(body, text="Used inside the command box in Add/Edit Entry to insert a {{name}} placeholder "
                              "at the cursor \u2014 no extra install needed, this works purely within the app.",
                  bg=COLOR_BG, fg=COLOR_SUBTEXT, font=FONT_SMALL, wraplength=360, justify="left"
                  ).pack(anchor="w", padx=16, pady=(6, 10))
@@ -183,10 +189,10 @@ class SettingsDialog(tk.Toplevel):
         ph_cfg = _load_config()
         ph_display = ph_cfg.get("insert_placeholder_display", "Ctrl+I (default)")
         self.placeholder_shortcut_display_var = tk.StringVar(value=ph_display)
-        tk.Label(self, textvariable=self.placeholder_shortcut_display_var, bg=COLOR_PANEL, fg=COLOR_ACCENT,
+        tk.Label(body, textvariable=self.placeholder_shortcut_display_var, bg=COLOR_PANEL, fg=COLOR_ACCENT,
                  font=("Segoe UI", 11, "bold"), padx=10, pady=6).pack(anchor="w", padx=16, fill="x")
 
-        ph_btn_row = tk.Frame(self, bg=COLOR_BG)
+        ph_btn_row = tk.Frame(body, bg=COLOR_BG)
         ph_btn_row.pack(anchor="w", padx=16, pady=(8, 16))
         tk.Button(ph_btn_row, text="Record Shortcut...", command=self._record_placeholder_shortcut,
                   bg=COLOR_ACCENT, fg=COLOR_SIDEBAR, relief="flat", font=("Segoe UI", 10, "bold"), padx=12, pady=4
@@ -194,29 +200,30 @@ class SettingsDialog(tk.Toplevel):
         tk.Button(ph_btn_row, text="Reset to Ctrl+I", command=self._clear_placeholder_shortcut, bg=COLOR_PANEL,
                   fg=COLOR_TEXT, relief="flat", font=FONT_SMALL, padx=12, pady=4).pack(side="left", padx=(8, 0))
 
-        tk.Frame(self, bg=COLOR_PANEL, height=1).pack(fill="x", padx=16, pady=(0, 14))
+        tk.Frame(body, bg=COLOR_PANEL, height=1).pack(fill="x", padx=16, pady=(0, 14))
 
-        tk.Label(self, text="Updates", bg=COLOR_BG, fg=COLOR_TEXT, font=FONT_HEADING
+        tk.Label(body, text="Updates", bg=COLOR_BG, fg=COLOR_TEXT, font=FONT_HEADING
                  ).pack(anchor="w", padx=16)
-        tk.Label(self, text=f"You're running v{APP_VERSION}.", bg=COLOR_BG, fg=COLOR_SUBTEXT,
+        tk.Label(body, text=f"You're running v{APP_VERSION}.", bg=COLOR_BG, fg=COLOR_SUBTEXT,
                  font=FONT_SMALL).pack(anchor="w", padx=16, pady=(6, 8))
 
         auto_check_cfg = _load_config()
         self.auto_update_var = tk.BooleanVar(value=auto_check_cfg.get("auto_update_check", True))
-        tk.Checkbutton(self, text="Check for updates automatically (about once a day)",
+        tk.Checkbutton(body, text="Check for updates automatically (about once a day)",
                         variable=self.auto_update_var, bg=COLOR_BG, fg=COLOR_TEXT, selectcolor=COLOR_PANEL,
                         activebackground=COLOR_BG, activeforeground=COLOR_TEXT, font=FONT_NORMAL,
                         command=self._toggle_auto_update_check).pack(anchor="w", padx=16)
 
         self.update_status_var = tk.StringVar(value="")
-        tk.Button(self, text="Check for Updates", command=self._check_for_updates_manual, bg=COLOR_PANEL,
+        tk.Button(body, text="Check for Updates", command=self._check_for_updates_manual, bg=COLOR_PANEL,
                   fg=COLOR_TEXT, relief="flat", font=FONT_SMALL, padx=10, pady=4
                   ).pack(anchor="w", padx=16, pady=(10, 4))
-        tk.Label(self, textvariable=self.update_status_var, bg=COLOR_BG, fg=COLOR_SUBTEXT, font=FONT_SMALL,
+        tk.Label(body, textvariable=self.update_status_var, bg=COLOR_BG, fg=COLOR_SUBTEXT, font=FONT_SMALL,
                  wraplength=360, justify="left").pack(anchor="w", padx=16, pady=(0, 16))
 
-        tk.Button(self, text="Close", command=self.destroy, bg=COLOR_PANEL, fg=COLOR_TEXT,
-                  relief="flat", padx=14, pady=4).pack(pady=(0, 16))
+        tk.Button(scroll.footer, text="Close", command=self.destroy, bg=COLOR_PANEL, fg=COLOR_TEXT,
+                  relief="flat", padx=14, pady=4).pack(pady=(8, 12))
+        fit_dialog(body, master)
 
     def _toggle_auto_update_check(self):
         cfg = _load_config()

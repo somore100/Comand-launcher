@@ -16,10 +16,20 @@ class BulkAddDialog(tk.Toplevel):
         self.result = None  # list of entry dicts when confirmed
         self.title("Add Multiple Entries")
         self.configure(bg=COLOR_BG)
-        self.geometry("680x620")
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        self.geometry(f"{min(680, sw - 20)}x{min(620, int(sh * 0.9))}")
+        self.minsize(min(480, sw - 20), min(360, int(sh * 0.9)))
+        self.bind("<Escape>", lambda e: self.destroy())
         self.transient(master)
         self.grab_set()
 
+        bar = tk.Frame(self, bg=COLOR_BG)
+        bar.pack(side="bottom", fill="x", padx=16, pady=12)
+        self.add_btn = tk.Button(bar, text="Add 0", command=self._confirm, bg=COLOR_ACCENT, fg=COLOR_SIDEBAR,
+                                 font=("Segoe UI", 10, "bold"), relief="flat", padx=14, pady=4)
+        self.add_btn.pack(side="right")
+        tk.Button(bar, text="Cancel", command=self.destroy, bg=COLOR_ACCENT_DIM, fg=COLOR_TEXT, relief="flat",
+                  font=FONT_NORMAL, padx=14, pady=4).pack(side="right", padx=(0, 8))
         tk.Label(self, text=HELP, bg=COLOR_BG, fg=COLOR_SUBTEXT, font=FONT_SMALL, wraplength=640,
                  justify="left", anchor="w").pack(fill="x", padx=16, pady=(14, 6))
 
@@ -62,13 +72,6 @@ class BulkAddDialog(tk.Toplevel):
         sb.pack(side="right", fill="y")
         self.preview.pack(side="left", fill="both", expand=True)
 
-        bar = tk.Frame(self, bg=COLOR_BG)
-        bar.pack(fill="x", padx=16, pady=12)
-        self.add_btn = tk.Button(bar, text="Add 0", command=self._confirm, bg=COLOR_ACCENT, fg=COLOR_SIDEBAR,
-                                 font=("Segoe UI", 10, "bold"), relief="flat", padx=14, pady=4)
-        self.add_btn.pack(side="right")
-        tk.Button(bar, text="Cancel", command=self.destroy, bg=COLOR_ACCENT_DIM, fg=COLOR_TEXT, relief="flat",
-                  font=FONT_NORMAL, padx=14, pady=4).pack(side="right", padx=(0, 8))
         self.text.focus_set()
         self._refresh_preview()
 
