@@ -15,6 +15,7 @@ from .data import _load_config
 from .hotkeys import HotkeyRecorderDialog
 from .placeholders import extract_placeholders
 from .platform_utils import is_linux, is_windows
+from .scrollframe import ScrollableBody, fit_dialog
 from .scheduling import SCHEDULE_WEEKDAYS
 from .theme import COLOR_ACCENT, COLOR_ACCENT_DIM, COLOR_BG, COLOR_PANEL, COLOR_RED, COLOR_SELECT, COLOR_SIDEBAR, COLOR_SUBTEXT, COLOR_TEXT, DEFAULT_ICON, EMOJI_CHOICES, FONT_HEADING, FONT_MONO, FONT_NORMAL, FONT_SMALL, SCHEDULE_TIME_RE, UNCATEGORIZED
 
@@ -181,14 +182,19 @@ class EntryDialog(tk.Toplevel):
 
         self.title("Edit Entry" if entry else "Add Entry")
         self.configure(bg=COLOR_BG)
-        self.resizable(False, False)
+        self.resizable(False, True)
         self.transient(master)
         self.grab_set()
+        self.bind("<Escape>", lambda e: self._cancel())
+
+        scroll = ScrollableBody(self)
+        scroll.pack(fill="both", expand=True)
+        body = scroll.inner
 
         pad = {"padx": 16, "pady": (10, 0)}
 
         def label(text):
-            return tk.Label(self, text=text, bg=COLOR_BG, fg=COLOR_SUBTEXT, font=FONT_SMALL, anchor="w")
+            return tk.Label(body, text=text, bg=COLOR_BG, fg=COLOR_SUBTEXT, font=FONT_SMALL, anchor="w")
 
         # Name + icon row
         label("Icon").grid(row=0, column=0, sticky="w", **pad)
@@ -197,7 +203,7 @@ class EntryDialog(tk.Toplevel):
         self.icon_var = tk.StringVar(value=entry["icon"] if entry else DEFAULT_ICON)
         self.name_var = tk.StringVar(value=entry["name"] if entry else "")
 
-        icon_row = tk.Frame(self, bg=COLOR_BG)
+        icon_row = tk.Frame(body, bg=COLOR_BG)
         icon_row.grid(row=1, column=0, sticky="w", padx=(16, 6))
         self.icon_label = tk.Label(icon_row, textvariable=self.icon_var, font=("Segoe UI", 16),
                                     bg=COLOR_PANEL, fg=COLOR_TEXT, width=2)
@@ -205,7 +211,7 @@ class EntryDialog(tk.Toplevel):
         tk.Button(icon_row, text="\U0001F600", font=("Segoe UI", 10), command=self._open_emoji_picker,
                   bg=COLOR_ACCENT_DIM, fg=COLOR_TEXT, relief="flat", width=2).pack(side="left", padx=(4, 0))
 
-        name_entry = tk.Entry(self, textvariable=self.name_var, width=32, font=FONT_NORMAL,
+        name_entry = tk.Entry(body, textvariable=self.name_var, width=32, font=FONT_NORMAL,
                                bg=COLOR_PANEL, fg=COLOR_TEXT, insertbackground=COLOR_TEXT, relief="flat")
         name_entry.grid(row=1, column=1, sticky="we", padx=(0, 16))
 
@@ -213,7 +219,7 @@ class EntryDialog(tk.Toplevel):
         self.type_var = tk.StringVar(value=entry["entry_type"] if entry else "command")
         label("Type").grid(row=2, column=0, columnspan=2, sticky="w", **pad)
 
-        type_frame = tk.Frame(self, bg=COLOR_BG)
+        type_frame = tk.Frame(body, bg=COLOR_BG)
         type_frame.grid(row=3, column=0, columnspan=2, sticky="w", padx=16)
         tk.Radiobutton(type_frame, text="Command / Script", variable=self.type_var, value="command",
                         bg=COLOR_BG, fg=COLOR_TEXT, selectcolor=COLOR_PANEL, activebackground=COLOR_BG,
@@ -229,10 +235,10 @@ class EntryDialog(tk.Toplevel):
 
         # Command (multiline text box)
         self.path_label_var = tk.StringVar(value="Command (supports multiple lines)")
-        tk.Label(self, textvariable=self.path_label_var, bg=COLOR_BG, fg=COLOR_SUBTEXT,
+        tk.Label(body, textvariable=self.path_label_var, bg=COLOR_BG, fg=COLOR_SUBTEXT,
                  font=FONT_SMALL, anchor="w").grid(row=4, column=0, columnspan=2, sticky="w", padx=16, pady=(10, 0))
 
-        cmd_frame = tk.Frame(self, bg=COLOR_BG)
+        cmd_frame = tk.Frame(body, bg=COLOR_BG)
         cmd_frame.grid(row=5, column=0, columnspan=2, sticky="we", padx=16)
         self.command_text = tk.Text(cmd_frame, width=46, height=6, font=FONT_MONO, bg=COLOR_PANEL,
                                      fg=COLOR_TEXT, insertbackground=COLOR_TEXT, relief="flat", wrap="none",
@@ -249,7 +255,7 @@ class EntryDialog(tk.Toplevel):
         self._placeholder_shortcut_display = cfg.get("insert_placeholder_display", "Ctrl+I")
         self.command_text.bind(self._placeholder_shortcut, self._add_input_box_event)
 
-        browse_frame = tk.Frame(self, bg=COLOR_BG)
+        browse_frame = tk.Frame(body, bg=COLOR_BG)
         browse_frame.grid(row=6, column=0, columnspan=2, sticky="w", padx=16, pady=(4, 0))
         tk.Button(browse_frame, text="Browse for file...", command=self._browse_command, bg=COLOR_PANEL,
                   fg=COLOR_TEXT, relief="flat", font=FONT_SMALL, padx=8).pack(side="left")
@@ -258,7 +264,7 @@ class EntryDialog(tk.Toplevel):
         tk.Label(browse_frame, text=".sh / .bat / .ps1 / .py files auto-run with the right interpreter",
                   bg=COLOR_BG, fg=COLOR_SUBTEXT, font=("Segoe UI", 8)).pack(side="left", padx=(8, 0))
 
-        tk.Label(self, text=f"Tip: type {{{{name}}}} or {{{{name:default}}}} yourself, click \"+ Add Input Box\", "
+        tk.Label(body, text=f"Tip: type {{{{name}}}} or {{{{name:default}}}} yourself, click \"+ Add Input Box\", "
                              f"or press {self._placeholder_shortcut_display} in the command box \u2014 all three "
                              f"prompt for a value each time you run this (e.g. git commit -m \"{{{{message:update}}}}\")",
                   bg=COLOR_BG, fg=COLOR_SUBTEXT, font=("Segoe UI", 8), wraplength=420, justify="left"
@@ -266,7 +272,7 @@ class EntryDialog(tk.Toplevel):
 
         # Working directory
         label("Working Directory (optional)").grid(row=8, column=0, columnspan=2, sticky="w", **pad)
-        wd_frame = tk.Frame(self, bg=COLOR_BG)
+        wd_frame = tk.Frame(body, bg=COLOR_BG)
         wd_frame.grid(row=9, column=0, columnspan=2, sticky="we", padx=16)
         self.wd_var = tk.StringVar(value=entry["working_dir"] if entry else "")
         tk.Entry(wd_frame, textvariable=self.wd_var, width=38, font=FONT_NORMAL, bg=COLOR_PANEL, fg=COLOR_TEXT,
@@ -278,14 +284,14 @@ class EntryDialog(tk.Toplevel):
         label("Category").grid(row=10, column=0, columnspan=2, sticky="w", **pad)
         self.category_var = tk.StringVar(value=entry["category"] if entry else (categories[0] if categories else UNCATEGORIZED))
         cat_values = categories if categories else [UNCATEGORIZED]
-        self.category_combo = ttk.Combobox(self, textvariable=self.category_var, values=cat_values, width=34,
+        self.category_combo = ttk.Combobox(body, textvariable=self.category_var, values=cat_values, width=34,
                                             font=FONT_NORMAL)
         self.category_combo.grid(row=11, column=0, columnspan=2, sticky="we", padx=16)
 
         # Run mode
         label("Run Mode").grid(row=12, column=0, columnspan=2, sticky="w", **pad)
         self.mode_var = tk.StringVar(value=entry["run_mode"] if entry else "terminal")
-        mode_frame = tk.Frame(self, bg=COLOR_BG)
+        mode_frame = tk.Frame(body, bg=COLOR_BG)
         mode_frame.grid(row=13, column=0, columnspan=2, sticky="w", padx=16, pady=(0, 4))
         tk.Radiobutton(mode_frame, text="Open in Terminal", variable=self.mode_var, value="terminal",
                         bg=COLOR_BG, fg=COLOR_TEXT, selectcolor=COLOR_PANEL, activebackground=COLOR_BG,
@@ -298,7 +304,7 @@ class EntryDialog(tk.Toplevel):
         self.autostart_var = tk.BooleanVar(
             value=entry_autostart_enabled(entry["id"]) if entry else False
         )
-        autostart_frame = tk.Frame(self, bg=COLOR_BG)
+        autostart_frame = tk.Frame(body, bg=COLOR_BG)
         autostart_frame.grid(row=14, column=0, columnspan=2, sticky="w", padx=16, pady=(4, 10))
         tk.Checkbutton(autostart_frame, text="Run this automatically when the computer starts",
                         variable=self.autostart_var, bg=COLOR_BG, fg=COLOR_TEXT, selectcolor=COLOR_PANEL,
@@ -319,7 +325,7 @@ class EntryDialog(tk.Toplevel):
         existing_days = set(entry.get("schedule_days") or []) if entry else set()
         self.schedule_day_vars = {d: tk.BooleanVar(value=(d in existing_days)) for d in SCHEDULE_WEEKDAYS}
 
-        schedule_frame = tk.Frame(self, bg=COLOR_BG)
+        schedule_frame = tk.Frame(body, bg=COLOR_BG)
         schedule_frame.grid(row=15, column=0, columnspan=2, sticky="w", padx=16, pady=(4, 10))
         tk.Checkbutton(schedule_frame, text="Run on a schedule", variable=self.schedule_enabled_var,
                         bg=COLOR_BG, fg=COLOR_TEXT, selectcolor=COLOR_PANEL, activebackground=COLOR_BG,
@@ -352,7 +358,7 @@ class EntryDialog(tk.Toplevel):
         self.browser_profile_dir_var = tk.StringVar(
             value=entry.get("browser_profile_dir", "") if entry else ""
         )
-        bp_frame = tk.Frame(self, bg=COLOR_BG)
+        bp_frame = tk.Frame(body, bg=COLOR_BG)
         bp_frame.grid(row=16, column=0, columnspan=2, sticky="w", padx=16, pady=(4, 10))
         tk.Checkbutton(bp_frame, text="Persistent browser profile (for browser-automation bots)",
                         variable=self.browser_profile_var, bg=COLOR_BG, fg=COLOR_TEXT, selectcolor=COLOR_PANEL,
@@ -381,7 +387,7 @@ class EntryDialog(tk.Toplevel):
             value=(entry.get("hotkey_display") or "Not set") if entry else "Not set"
         )
         if HAVE_PYNPUT:
-            hotkey_frame = tk.Frame(self, bg=COLOR_BG)
+            hotkey_frame = tk.Frame(body, bg=COLOR_BG)
             hotkey_frame.grid(row=17, column=0, columnspan=2, sticky="w", padx=16, pady=(0, 10))
             tk.Label(hotkey_frame, text="Launch Shortcut (optional)", bg=COLOR_BG, fg=COLOR_SUBTEXT,
                      font=FONT_SMALL, anchor="w").pack(anchor="w")
@@ -402,8 +408,8 @@ class EntryDialog(tk.Toplevel):
             buttons_row = 17
 
         # Buttons
-        btn_frame = tk.Frame(self, bg=COLOR_BG)
-        btn_frame.grid(row=buttons_row, column=0, columnspan=2, sticky="we", padx=16, pady=(6, 16))
+        btn_frame = tk.Frame(scroll.footer, bg=COLOR_BG)
+        btn_frame.pack(fill="x", padx=16, pady=(6, 12))
         tk.Button(btn_frame, text="Cancel", command=self._cancel, bg=COLOR_PANEL, fg=COLOR_TEXT,
                   relief="flat", font=FONT_NORMAL, padx=14, pady=4).pack(side="right")
         tk.Button(btn_frame, text="Save", command=self._save, bg=COLOR_ACCENT, fg=COLOR_SIDEBAR,
@@ -411,6 +417,7 @@ class EntryDialog(tk.Toplevel):
 
         self._sync_command_widget()
         name_entry.focus_set()
+        fit_dialog(self, master)
 
     def _record_entry_hotkey(self):
         dialog = HotkeyRecorderDialog(self)

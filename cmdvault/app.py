@@ -314,15 +314,16 @@ class CommandVault(tk.Tk):
 
         self.search_var = tk.StringVar()
         self.search_var.trace_add("write", lambda *_: self._refresh_list())
+        # Buttons are packed first (right-aligned) so a narrow window shrinks the
+        # search box instead of clipping them.
+        tk.Button(top_bar, text="+ Add many", command=self._add_many, bg=COLOR_PANEL, fg=COLOR_TEXT,
+                  font=("Segoe UI", 10), relief="flat", padx=12, pady=4).pack(side="right", padx=(6, 0))
+        tk.Button(top_bar, text="+ Add", command=self._add_entry, bg=COLOR_ACCENT, fg=COLOR_SIDEBAR,
+                  font=("Segoe UI", 10, "bold"), relief="flat", padx=14, pady=4).pack(side="right")
         search_entry = tk.Entry(top_bar, textvariable=self.search_var, font=FONT_NORMAL, bg=COLOR_PANEL,
-                                 fg=COLOR_TEXT, insertbackground=COLOR_TEXT, relief="flat")
+                                 fg=COLOR_TEXT, insertbackground=COLOR_TEXT, relief="flat", width=10)
         search_entry.pack(side="left", fill="x", expand=True, ipady=6, padx=(0, 10))
         self._set_placeholder(search_entry, "Search commands...")
-
-        tk.Button(top_bar, text="+ Add", command=self._add_entry, bg=COLOR_ACCENT, fg=COLOR_SIDEBAR,
-                  font=("Segoe UI", 10, "bold"), relief="flat", padx=14, pady=4).pack(side="left")
-        tk.Button(top_bar, text="+ Add many", command=self._add_many, bg=COLOR_PANEL, fg=COLOR_TEXT,
-                  font=("Segoe UI", 10), relief="flat", padx=12, pady=4).pack(side="left", padx=(6, 0))
 
         list_frame = tk.Frame(main, bg=COLOR_BG)
         list_frame.pack(fill="both", expand=True, padx=20, pady=(0, 10))
@@ -336,17 +337,16 @@ class CommandVault(tk.Tk):
         self.tree.heading("boot", text="Boot")
         self.tree.heading("schedule", text="Sched")
         self.tree.column("icon", width=40, anchor="center", stretch=False)
-        self.tree.column("name", width=300, anchor="w")
-        self.tree.column("category", width=130, anchor="w")
-        self.tree.column("mode", width=130, anchor="center")
+        self.tree.column("name", width=300, minwidth=60, anchor="w")
+        self.tree.column("category", width=130, minwidth=60, anchor="w")
+        self.tree.column("mode", width=130, minwidth=60, anchor="center")
         self.tree.column("boot", width=50, anchor="center", stretch=False)
         self.tree.column("schedule", width=80, anchor="center", stretch=False)
-        self.tree.pack(side="left", fill="both", expand=True)
-        self.tree.bind("<Double-1>", lambda e: self._run_selected())
-
         scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=scrollbar.set)
         scrollbar.pack(side="right", fill="y")
+        self.tree.pack(side="left", fill="both", expand=True)
+        self.tree.bind("<Double-1>", lambda e: self._run_selected())
 
         self.tree.tag_configure("odd", background=COLOR_PANEL)
         self.tree.tag_configure("even", background=COLOR_ROW_ALT)
