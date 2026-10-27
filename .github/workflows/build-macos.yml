@@ -19,7 +19,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # macos-14 runners are Apple Silicon; macos-13 are Intel. Building
+          # macos-14 runners are Apple Silicon; macos-15-intel is Intel (the old
+          # macos-13 runner was retired, so jobs on it queue forever). Building
           # both means the .dmg works on either kind of Mac without users
           # needing Rosetta -- PyInstaller doesn't cross-build, so this is
           # the two-runner approach rather than a single --target-arch
@@ -27,7 +28,7 @@ jobs:
           # pynput/pystray's compiled bits, to ship universal2 wheels).
           - os: macos-14
             arch: arm64
-          - os: macos-13
+          - os: macos-15-intel
             arch: x86_64
 
     steps:
