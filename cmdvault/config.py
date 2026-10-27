@@ -3,5 +3,5 @@
 
 
 APP_NAME = "Command Vault"
-APP_VERSION = "1.6.0"
+APP_VERSION = "1.7.0"
 GITHUB_REPO = "somore100/Comand-launcher"  # typo in repo name is intentional, cosmetic only

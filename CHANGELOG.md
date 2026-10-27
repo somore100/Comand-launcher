@@ -2,7 +2,7 @@
 
 All notable changes to Command Vault are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
-## Unreleased
+## v1.7.0 — 2026-10-27
 
 ### Added
 
@@ -25,6 +25,7 @@ All notable changes to Command Vault are documented here. Format loosely follows
 
 ### Fixed
 
+* UI no longer overflows small screens. The Edit Entry and Settings dialogs now scroll, with their Save/Cancel/Close buttons pinned at the bottom and the height capped to the screen; "Add many" caps its size and keeps its buttons visible. On the main window, "+ Add" / "+ Add many" are no longer clipped in a narrow window (the search box shrinks instead), the list's scrollbar stays visible, and list columns can shrink. Escape closes these dialogs.
 * App-level "run on startup" doing nothing on the AppImage build. Autostart was launching the AppImage directly from the `.desktop` file's `Exec=` line, which has to FUSE-mount itself right as the desktop session starts — a well-known race against DBus/`XDG_RUNTIME_DIR` not being up yet. Autostart now runs through a wrapper script that uses `--appimage-extract-and-run` (sidesteps FUSE for that one launch), defensively re-applies the executable bit, and adds a short startup delay that isn't GNOME-specific. Applied to both the app-level autostart and per-entry AppImage-type autostart entries.
 * Entries launched via "Run" inheriting Command Vault's own `APPIMAGE`/`APPDIR`/`ARGV0`/`OWD` environment variables when Command Vault itself is running as an AppImage. A launched script or app that happens to also check `APPIMAGE` would see it pointing at Command Vault's own binary, only when launched via Command Vault's Run button — not when run standalone. Those AppImage-runtime variables are now stripped from the environment of anything Command Vault launches.
 
