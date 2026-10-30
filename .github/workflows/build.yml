@@ -56,6 +56,32 @@ jobs:
         run: |
           ./appimagetool --appimage-extract-and-run CommandVault.AppDir CommandVault-x86_64.AppImage
 
+      - name: Build .deb, .rpm and Arch packages
+        run: |
+          sudo apt-get install -y ruby rpm libarchive-tools zstd
+          sudo gem install --no-document fpm
+          VERSION=$(python3 -c "import re;print(re.search(r'APP_VERSION = \"([^\"]+)\"', open('cmdvault/config.py').read()).group(1))")
+          mkdir -p pkgroot/usr/bin pkgroot/usr/share/applications pkgroot/usr/share/icons/hicolor/256x256/apps
+          install -m755 dist/CommandVault pkgroot/usr/bin/command-vault
+          sed -e 's|^Exec=.*|Exec=command-vault|' -e 's|^Icon=.*|Icon=command-vault|' \
+            packaging/command-vault.desktop > pkgroot/usr/share/applications/command-vault.desktop
+          install -m644 packaging/icon.png pkgroot/usr/share/icons/hicolor/256x256/apps/command-vault.png
+          for T in deb rpm pacman; do
+            fpm -s dir -t "$T" -n command-vault -v "$VERSION" --architecture x86_64 \
+              --description "Command Vault: launcher for commands, scripts and bots" \
+              --url "https://github.com/somore100/Comand-launcher" -C pkgroot .
+          done
+          ls -l *.deb *.rpm *.pkg.tar.*
+
+      - name: Upload Linux package artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: CommandVault-Linux-packages
+          path: |
+            *.deb
+            *.rpm
+            *.pkg.tar.*
+
       - name: Upload AppImage artifact
         uses: actions/upload-artifact@v4
         with:
@@ -138,5 +164,6 @@ jobs:
         with:
           files: |
             artifacts/CommandVault-Linux-AppImage/CommandVault-x86_64.AppImage
+            artifacts/CommandVault-Linux-packages/*
             artifacts/CommandVault-Windows-exe/CommandVault.exe
             artifacts/CommandVault-macOS-dmg/CommandVault-macOS.dmg
