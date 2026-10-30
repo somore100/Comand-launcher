@@ -3,6 +3,7 @@ import os
 import sys
 from .browser import browser_env_line
 from .execution import resolve_exec_command
+from .privilege import apply_admin
 from .platform_utils import is_linux, is_windows
 
 
@@ -181,7 +182,7 @@ def set_entry_autostart(entry, enabled):
         env_line = browser_env_line(entry)
         if env_line:
             lines.append(env_line)
-        lines.append(exec_cmd)
+        lines.append(apply_admin(entry, exec_cmd, silent=True, unattended=True))
         with open(script_path, "w") as f:
             f.write("\n".join(lines) + "\n")
         os.chmod(script_path, 0o755)

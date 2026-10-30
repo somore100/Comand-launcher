@@ -7,6 +7,7 @@ import threading
 from .browser import prefix_exec_cmd
 from .data import _load_config
 from .execution import resolve_exec_command
+from .privilege import ADMIN_REMEMBER, apply_admin, command_allowed, find_sudo_calls
 from .placeholders import PlaceholderDialog, extract_placeholders, fill_placeholders
 
 
@@ -117,6 +118,15 @@ def run_entry(entry, log=None):
         exec_cmd = f'"{command}"'
     else:
         exec_cmd = resolve_exec_command(command)
+
+    exec_cmd = apply_admin(entry, exec_cmd, silent=(run_mode == "silent"))
+    if entry.get("admin_mode") == ADMIN_REMEMBER:
+        calls, _ = find_sudo_calls(command)
+        missing = [a for u, a in calls if not command_allowed(u, a)]
+        if missing:
+            emit("  \u26A0 No passwordless rule is active for: "
+                 + "; ".join(" ".join(a) for a in missing)
+                 + " \u2014 open Edit and Save this entry to set it up.")
 
     try:
         exec_cmd = prefix_exec_cmd(entry, exec_cmd)

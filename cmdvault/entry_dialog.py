@@ -15,6 +15,7 @@ from .data import _load_config
 from .hotkeys import HotkeyRecorderDialog
 from .placeholders import extract_placeholders
 from .platform_utils import is_linux, is_windows
+from .privilege import ADMIN_ASK, ADMIN_OFF, ADMIN_REMEMBER, plan_admin, supports_admin
 from .scrollframe import ScrollableBody, fit_dialog
 from .scheduling import SCHEDULE_WEEKDAYS
 from .theme import COLOR_ACCENT, COLOR_ACCENT_DIM, COLOR_BG, COLOR_PANEL, COLOR_RED, COLOR_SELECT, COLOR_SIDEBAR, COLOR_SUBTEXT, COLOR_TEXT, DEFAULT_ICON, EMOJI_CHOICES, FONT_HEADING, FONT_MONO, FONT_NORMAL, FONT_SMALL, SCHEDULE_TIME_RE, UNCATEGORIZED
@@ -381,6 +382,26 @@ class EntryDialog(tk.Toplevel):
                  bg=COLOR_BG, fg=COLOR_SUBTEXT, font=("Segoe UI", 8), wraplength=380, justify="left"
                  ).pack(anchor="w", pady=(4, 0))
 
+        # Administrator rights (sudo) -- Linux/macOS only
+        self.admin_var = tk.StringVar(value=entry.get("admin_mode", ADMIN_OFF) if entry else ADMIN_OFF)
+        if supports_admin():
+            admin_frame = tk.Frame(body, bg=COLOR_BG)
+            admin_frame.grid(row=17, column=0, columnspan=2, sticky="w", padx=16, pady=(0, 10))
+            tk.Label(admin_frame, text="Administrator rights (for commands using sudo)", bg=COLOR_BG,
+                     fg=COLOR_SUBTEXT, font=FONT_SMALL, anchor="w").pack(anchor="w")
+            for value, text in ((ADMIN_OFF, "Off \u2014 leave sudo as written"),
+                                (ADMIN_ASK, "Ask for the password each run"),
+                                (ADMIN_REMEMBER, "Don't ask \u2014 allow these exact sudo commands (set up once)")):
+                tk.Radiobutton(admin_frame, text=text, value=value, variable=self.admin_var, bg=COLOR_BG,
+                               fg=COLOR_TEXT, selectcolor=COLOR_PANEL, activebackground=COLOR_BG,
+                               activeforeground=COLOR_TEXT, font=FONT_SMALL).pack(anchor="w")
+            tk.Label(admin_frame,
+                     text="\"Don't ask\" installs a rule through your system's own password prompt when you "
+                          "save: only the exact sudo commands written in this entry (or its script) run without "
+                          "a password. Nothing is stored. Scheduled and boot runs need this option.",
+                     bg=COLOR_BG, fg=COLOR_SUBTEXT, font=("Segoe UI", 8), wraplength=380, justify="left"
+                     ).pack(anchor="w", pady=(4, 0))
+
         # Launch shortcut (optional, needs pynput)
         self.entry_hotkey_pynput = entry.get("hotkey_pynput", "") if entry else ""
         self.entry_hotkey_display_var = tk.StringVar(
@@ -388,7 +409,7 @@ class EntryDialog(tk.Toplevel):
         )
         if HAVE_PYNPUT:
             hotkey_frame = tk.Frame(body, bg=COLOR_BG)
-            hotkey_frame.grid(row=17, column=0, columnspan=2, sticky="w", padx=16, pady=(0, 10))
+            hotkey_frame.grid(row=18, column=0, columnspan=2, sticky="w", padx=16, pady=(0, 10))
             tk.Label(hotkey_frame, text="Launch Shortcut (optional)", bg=COLOR_BG, fg=COLOR_SUBTEXT,
                      font=FONT_SMALL, anchor="w").pack(anchor="w")
             row = tk.Frame(hotkey_frame, bg=COLOR_BG)
@@ -538,6 +559,13 @@ class EntryDialog(tk.Toplevel):
         if not name or not command.strip():
             messagebox.showwarning("Missing info", "Name and Command/Path are both required.")
             return
+        admin_mode = self.admin_var.get() if supports_admin() else ADMIN_OFF
+        if admin_mode == ADMIN_REMEMBER:
+            plan = plan_admin({"command": command})
+            if plan["problems"]:
+                messagebox.showwarning("Can't allow these commands without a password",
+                                       "\n\n".join(plan["problems"]), parent=self)
+                return
         category = self.category_var.get().strip() or UNCATEGORIZED
         icon = self.icon_var.get().strip() or DEFAULT_ICON
 
@@ -568,6 +596,8 @@ class EntryDialog(tk.Toplevel):
             "schedule_time": schedule_time,
             "browser_profile": bool(self.browser_profile_var.get()),
             "browser_profile_dir": self.browser_profile_dir_var.get().strip(),
+            "admin_mode": admin_mode,
+            "admin_rule_hash": self.entry.get("admin_rule_hash", "") if self.entry else "",
         }
         self.destroy()
 

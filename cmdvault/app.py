@@ -12,6 +12,7 @@ from .autostart import set_entry_autostart
 from .runlog_dialog import RunLogDialog
 from .runstatus import read_run_status
 from .browser import browser_profile_path
+from .privilege import ADMIN_REMEMBER, install_rule, plan_admin, remove_rule, rule_hash
 from .config import APP_VERSION
 from .data import _load_config, _save_config, load_data, save_data
 from .bulk_dialog import BulkAddDialog
@@ -630,6 +631,36 @@ class CommandVault(tk.Tk):
         except (NotImplementedError, RuntimeError) as e:
             messagebox.showwarning("Scheduling failed", str(e))
 
+    def _apply_admin(self, entry):
+        """Keeps the entry's sudoers rule in step with its admin_mode: installs
+        or refreshes it for 'remember' (one OS password prompt, skipped when
+        nothing changed), removes it otherwise."""
+        has_rule = bool(entry.get("admin_rule_hash"))
+        if entry.get("admin_mode") == ADMIN_REMEMBER:
+            plan = plan_admin(entry)
+            if plan["problems"]:
+                messagebox.showwarning("Administrator rights", "\n\n".join(plan["problems"]))
+                return
+            digest = rule_hash(plan["text"])
+            if digest == entry.get("admin_rule_hash"):
+                return
+            ok, msg = install_rule(entry, plan)
+            if ok:
+                entry["admin_rule_hash"] = digest
+                save_data(self.data)
+                self._log(f'Allowed {len(plan["specs"])} sudo command(s) for "{entry["name"]}" without a password.')
+            else:
+                messagebox.showwarning("Administrator rights",
+                                       f"The rule wasn't installed, so this entry will still ask for a "
+                                       f"password (or fail when unattended).\n\n{msg}")
+        elif has_rule:
+            ok, msg = remove_rule(entry)
+            if ok:
+                entry["admin_rule_hash"] = ""
+                save_data(self.data)
+            else:
+                messagebox.showwarning("Administrator rights", f"Couldn't remove the old rule:\n\n{msg}")
+
     def _add_entry(self):
         dialog = EntryDialog(self, self._known_categories())
         self.wait_window(dialog)
@@ -638,6 +669,7 @@ class CommandVault(tk.Tk):
             if dialog.result["category"] not in self.data["categories"]:
                 self.data["categories"].append(dialog.result["category"])
             save_data(self.data)
+            self._apply_admin(dialog.result)
             self._apply_autostart(dialog.result)
             self._apply_schedule(dialog.result)
             self._rebuild_hotkey_listener()
@@ -671,6 +703,7 @@ class CommandVault(tk.Tk):
             if dialog.result["category"] not in self.data["categories"]:
                 self.data["categories"].append(dialog.result["category"])
             save_data(self.data)
+            self._apply_admin(dialog.result)
             self._apply_autostart(dialog.result)
             self._apply_schedule(dialog.result)
             self._rebuild_hotkey_listener()
@@ -685,6 +718,9 @@ class CommandVault(tk.Tk):
         if messagebox.askyesno("Delete entry", f"Delete '{entry['name']}'?"):
             self.data["commands"] = [c for c in self.data["commands"] if c["id"] != entry["id"]]
             save_data(self.data)
+            if entry.get("admin_rule_hash"):
+                entry["admin_mode"] = "off"
+                remove_rule(entry)
             try:
                 set_entry_autostart(entry, False)
             except NotImplementedError:

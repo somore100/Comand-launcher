@@ -4,6 +4,7 @@ import subprocess
 from .browser import browser_env_line
 from .execution import resolve_exec_command
 from .platform_utils import is_windows
+from .privilege import apply_admin
 from .runstatus import clear_run_status, posix_status_wrapper, windows_status_wrapper
 
 
@@ -170,7 +171,7 @@ def set_entry_schedule(entry, enabled):
             _write_crontab_lines(new_lines)
         return
 
-    exec_cmd = resolve_exec_command(entry["command"])
+    exec_cmd = apply_admin(entry, resolve_exec_command(entry["command"]), silent=True, unattended=True)
     working_dir = entry.get("working_dir") or ""
     body = []
     if working_dir:
