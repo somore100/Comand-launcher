@@ -10,10 +10,10 @@ jobs:
   build-linux-appimage:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -74,7 +74,7 @@ jobs:
           ls -l *.deb *.rpm *.pkg.tar.*
 
       - name: Upload Linux package artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: CommandVault-Linux-packages
           path: |
@@ -83,7 +83,7 @@ jobs:
             *.pkg.tar.*
 
       - name: Upload AppImage artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: CommandVault-Linux-AppImage
           path: CommandVault-x86_64.AppImage
@@ -91,10 +91,10 @@ jobs:
   build-windows-exe:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -110,7 +110,7 @@ jobs:
             main.py
 
       - name: Upload exe artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: CommandVault-Windows-exe
           path: dist/CommandVault.exe
@@ -118,10 +118,10 @@ jobs:
   build-macos-dmg:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -142,7 +142,7 @@ jobs:
             -ov -format UDZO CommandVault-macOS.dmg
 
       - name: Upload dmg artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: CommandVault-macOS-dmg
           path: CommandVault-macOS.dmg
@@ -155,7 +155,7 @@ jobs:
       contents: write
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           path: artifacts
 
