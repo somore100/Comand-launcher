@@ -11,7 +11,9 @@ import tkinter as tk
 from tkinter import ttk
 from .compat import HAVE_PYNPUT, HAVE_PYSTRAY
 from .autostart import app_autostart_enabled, set_app_autostart, set_entry_autostart
-from .config import APP_VERSION
+from .config import APP_NAME, APP_VERSION, FEEDBACK_RELAY_TOKEN, FEEDBACK_RELAY_URL, SUPPORT_EMAIL
+from .feedback import FeedbackConfig
+from .feedback_dialog import FeedbackDialog
 from .data import _load_config, _normalize_vault_data, _save_config, get_data_dir, get_data_file, load_data, save_data, set_data_dir
 from .hotkeys import AllKeybindsDialog, HotkeyRecorderDialog
 from .platform_utils import is_linux
@@ -221,9 +223,20 @@ class SettingsDialog(tk.Toplevel):
         tk.Label(body, textvariable=self.update_status_var, bg=COLOR_BG, fg=COLOR_SUBTEXT, font=FONT_SMALL,
                  wraplength=360, justify="left").pack(anchor="w", padx=16, pady=(0, 16))
 
+        tk.Frame(body, bg=COLOR_PANEL, height=1).pack(fill="x", padx=16, pady=(0, 14))
+        tk.Label(body, text="Feedback", bg=COLOR_BG, fg=COLOR_TEXT, font=FONT_HEADING
+                 ).pack(anchor="w", padx=16, pady=(0, 4))
+        tk.Button(body, text="Leave Feedback", command=self._open_feedback, bg=COLOR_PANEL,
+                  fg=COLOR_TEXT, relief="flat", font=FONT_SMALL, padx=10, pady=4
+                  ).pack(anchor="w", padx=16, pady=(0, 16))
+
         tk.Button(scroll.footer, text="Close", command=self.destroy, bg=COLOR_PANEL, fg=COLOR_TEXT,
                   relief="flat", padx=14, pady=4).pack(pady=(8, 12))
-        fit_dialog(body, master)
+        fit_dialog(self, master)
+
+    def _open_feedback(self):
+        FeedbackDialog(self, FeedbackConfig(APP_NAME, APP_VERSION, SUPPORT_EMAIL,
+                                            FEEDBACK_RELAY_URL, FEEDBACK_RELAY_TOKEN))
 
     def _toggle_auto_update_check(self):
         cfg = _load_config()
