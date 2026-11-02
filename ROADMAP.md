@@ -10,7 +10,7 @@ Ordered work list. Update as items ship.
 ## Next
 1. **Builds** (commit the pending `build.yml`): .deb / .rpm / Arch packages, Intel macOS on `macos-15-intel`, bump actions off Node 20. Check packages on a real Fedora.
 2. **Windows admin rights**: "ask" = elevated launch (UAC); "remember" = Task Scheduler task with highest privileges, created once with one UAC approval.
-3. **Record bot**: record a website routine with `playwright codegen` + the entry's persistent browser profile, run headless on schedule/boot (e.g. start an Aternos server). Verify codegen + persistent profile on Fedora/Pop!_OS first. Caveats: captchas/2FA, site terms of service, Aternos start queue / "are you still there" confirmations, headless detection.
+3. **Record bot** (steps editor shipped in Unreleased; remaining: a recorder that turns clicks into steps, desktop-app steps): record a website routine with `playwright codegen` + the entry's persistent browser profile, run headless on schedule/boot (e.g. start an Aternos server). Verify codegen + persistent profile on Fedora/Pop!_OS first. Caveats: captchas/2FA, site terms of service, Aternos start queue / "are you still there" confirmations, headless detection.
 4. **Starter template** for new bot entries.
 5. **App interactions** (new): after launching an app, run steps inside it, e.g. open Firefox and restore the previous session with one click.
    - Firefox specifically: better done through its own settings than clicks (a per-entry profile with `browser.startup.page = 3` in `user.js`, or `firefox -P <profile>`); Ctrl+Shift+T only reopens the last closed window.

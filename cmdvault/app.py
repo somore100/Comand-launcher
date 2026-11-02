@@ -12,6 +12,7 @@ from .autostart import set_entry_autostart
 from .runlog_dialog import RunLogDialog
 from .runstatus import read_run_status
 from .browser import browser_profile_path
+from .routine import routine_script_path
 from .privilege import ADMIN_REMEMBER, install_rule, plan_admin, remove_rule, rule_hash
 from .config import APP_VERSION
 from .data import _load_config, _save_config, load_data, save_data
@@ -718,6 +719,12 @@ class CommandVault(tk.Tk):
         if messagebox.askyesno("Delete entry", f"Delete '{entry['name']}'?"):
             self.data["commands"] = [c for c in self.data["commands"] if c["id"] != entry["id"]]
             save_data(self.data)
+            if entry.get("entry_type") == "routine":
+                for suffix in ("", "-test"):
+                    try:
+                        os.remove(routine_script_path(entry["id"] + suffix))
+                    except OSError:
+                        pass
             if entry.get("admin_rule_hash"):
                 entry["admin_mode"] = "off"
                 remove_rule(entry)

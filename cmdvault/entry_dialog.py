@@ -15,6 +15,8 @@ from .data import _load_config
 from .hotkeys import HotkeyRecorderDialog
 from .placeholders import extract_placeholders
 from .platform_utils import is_linux, is_windows
+from . import routine as rt
+from .routine_dialog import RoutineDialog
 from .privilege import ADMIN_ASK, ADMIN_OFF, ADMIN_REMEMBER, plan_admin, supports_admin
 from .scrollframe import ScrollableBody, fit_dialog
 from .scheduling import SCHEDULE_WEEKDAYS
@@ -180,6 +182,8 @@ class EntryDialog(tk.Toplevel):
         self.result = None
         self.categories = categories
         self.entry = entry
+        self.entry_id = entry["id"] if entry else str(uuid.uuid4())
+        self.routine = dict(entry.get("routine") or {}) if entry else {}
 
         self.title("Edit Entry" if entry else "Add Entry")
         self.configure(bg=COLOR_BG)
@@ -230,6 +234,10 @@ class EntryDialog(tk.Toplevel):
                         bg=COLOR_BG, fg=COLOR_TEXT, selectcolor=COLOR_PANEL, activebackground=COLOR_BG,
                         activeforeground=COLOR_TEXT, font=FONT_SMALL, command=self._sync_command_widget
                         ).pack(side="left", padx=(12, 0))
+        tk.Radiobutton(type_frame, text="Web routine (no code)", variable=self.type_var, value="routine",
+                        bg=COLOR_BG, fg=COLOR_TEXT, selectcolor=COLOR_PANEL, activebackground=COLOR_BG,
+                        activeforeground=COLOR_TEXT, font=FONT_SMALL, command=self._sync_command_widget
+                        ).pack(side="left", padx=(12, 0))
         tk.Button(type_frame, text="Pick Installed App", command=self._open_app_picker,
                   bg=COLOR_ACCENT_DIM, fg=COLOR_TEXT, relief="flat", font=FONT_SMALL, padx=8
                   ).pack(side="left", padx=(16, 0))
@@ -270,6 +278,22 @@ class EntryDialog(tk.Toplevel):
                              f"prompt for a value each time you run this (e.g. git commit -m \"{{{{message:update}}}}\")",
                   bg=COLOR_BG, fg=COLOR_SUBTEXT, font=("Segoe UI", 8), wraplength=420, justify="left"
                   ).grid(row=7, column=0, columnspan=2, sticky="w", padx=16, pady=(4, 0))
+
+        # Web routine (replaces the command box when that type is chosen)
+        self.routine_frame = tk.Frame(body, bg=COLOR_BG)
+        self.routine_frame.grid(row=4, column=0, columnspan=2, rowspan=4, sticky="we", padx=16, pady=(10, 0))
+        self.routine_summary_var = tk.StringVar()
+        tk.Label(self.routine_frame, textvariable=self.routine_summary_var, bg=COLOR_BG, fg=COLOR_TEXT,
+                 font=FONT_NORMAL, justify="left", anchor="w", wraplength=420).pack(anchor="w")
+        tk.Button(self.routine_frame, text="Edit steps...", command=self._edit_routine, bg=COLOR_ACCENT_DIM,
+                  fg=COLOR_TEXT, relief="flat", font=FONT_NORMAL, padx=12, pady=4).pack(anchor="w", pady=(6, 0))
+        tk.Label(self.routine_frame,
+                 text="Build a list of steps for a website (open a page, click, type, wait) with simple forms. "
+                      "Command Vault turns it into a script and runs it like any entry, including on a schedule "
+                      "or at startup. Each step can have a fallback if something isn't found.",
+                 bg=COLOR_BG, fg=COLOR_SUBTEXT, font=("Segoe UI", 8), wraplength=420, justify="left"
+                 ).pack(anchor="w", pady=(6, 0))
+        self._cmd_widgets = [w for r in (4, 5, 6, 7) for w in body.grid_slaves(row=r) if w is not self.routine_frame]
 
         # Working directory
         label("Working Directory (optional)").grid(row=8, column=0, columnspan=2, sticky="w", **pad)
@@ -460,7 +484,33 @@ class EntryDialog(tk.Toplevel):
         self.entry_hotkey_pynput = ""
         self.entry_hotkey_display_var.set("Not set")
 
+    def _edit_routine(self):
+        name = self.name_var.get().strip() or "routine"
+        probe = {"id": self.entry_id, "browser_profile": True,
+                 "browser_profile_dir": self.browser_profile_dir_var.get()}
+        dialog = RoutineDialog(self, self.entry_id, name, self.routine, profile_dir=browser_profile_path(probe))
+        self.wait_window(dialog)
+        if dialog.result:
+            self.routine = dialog.result
+            self._update_routine_summary()
+
+    def _update_routine_summary(self):
+        n = len(self.routine.get("steps", []))
+        self.routine_summary_var.set(f"{n} step{'s' if n != 1 else ''} set up." if n else "No steps yet.")
+
     def _sync_command_widget(self):
+        is_routine = self.type_var.get() == "routine"
+        if is_routine:
+            for w in self._cmd_widgets:
+                w.grid_remove()
+            self.routine_frame.grid()
+            self._update_routine_summary()
+            if self.mode_var.get() == "terminal":
+                self.mode_var.set("silent")
+            return
+        self.routine_frame.grid_remove()
+        for w in self._cmd_widgets:
+            w.grid()
         if self.type_var.get() == "appimage":
             self.path_label_var.set("AppImage path")
         else:
@@ -556,7 +606,19 @@ class EntryDialog(tk.Toplevel):
     def _save(self):
         name = self.name_var.get().strip()
         command = self.command_text.get("1.0", "end-1c").strip("\n")
-        if not name or not command.strip():
+        is_routine = self.type_var.get() == "routine"
+        if is_routine:
+            error = rt.validate_steps(self.routine.get("steps", []))
+            if not name or error:
+                messagebox.showwarning("Missing info", "A name is required." if not name else error, parent=self)
+                return
+            try:
+                rt.write_script(self.entry_id, name, self.routine)
+            except OSError as e:
+                messagebox.showerror("Couldn't save the routine", str(e), parent=self)
+                return
+            command = rt.routine_command(self.entry_id)
+        elif not name or not command.strip():
             messagebox.showwarning("Missing info", "Name and Command/Path are both required.")
             return
         admin_mode = self.admin_var.get() if supports_admin() else ADMIN_OFF
@@ -580,7 +642,7 @@ class EntryDialog(tk.Toplevel):
         schedule_days = [d for d in SCHEDULE_WEEKDAYS if self.schedule_day_vars[d].get()]
 
         self.result = {
-            "id": self.entry["id"] if self.entry else str(uuid.uuid4()),
+            "id": self.entry_id,
             "name": name,
             "command": command,
             "working_dir": self.wd_var.get().strip(),
@@ -594,7 +656,8 @@ class EntryDialog(tk.Toplevel):
             "schedule_enabled": schedule_enabled,
             "schedule_days": schedule_days,
             "schedule_time": schedule_time,
-            "browser_profile": bool(self.browser_profile_var.get()),
+            "browser_profile": bool(self.browser_profile_var.get()) or is_routine,
+            "routine": self.routine if is_routine else {},
             "browser_profile_dir": self.browser_profile_dir_var.get().strip(),
             "admin_mode": admin_mode,
             "admin_rule_hash": self.entry.get("admin_rule_hash", "") if self.entry else "",
