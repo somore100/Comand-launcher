@@ -31,7 +31,7 @@ class SettingsDialog(tk.Toplevel):
         self.master_app = master
         self.title("Settings")
         self.configure(bg=COLOR_BG)
-        self.resizable(False, True)
+        self.resizable(True, True)
         self.transient(master)
         self.grab_set()
         self.bind("<Escape>", lambda e: self.destroy())

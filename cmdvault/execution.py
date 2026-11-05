@@ -1,6 +1,6 @@
 """execution -- split out of the former monolithic main.py."""
 import os
-from .platform_utils import is_windows
+from .platform_utils import is_linux, is_mac, is_windows
 
 
 # Script/command resolution
@@ -41,3 +41,48 @@ def resolve_exec_command(command):
 
 
 # ---------------------------------------------------------------------------
+
+
+# Program entries: an app file rather than a typed command
+# ---------------------------------------------------------------------------
+PROGRAM_HINT = {
+    "linux": "Program path (AppImage, binary or .desktop file)",
+    "mac": "App path (.app) or program",
+    "windows": "Program path (.exe, .lnk or .bat)",
+}
+
+
+def program_type_label():
+    if is_windows():
+        return "Program (.exe)"
+    if is_mac():
+        return "App (.app)"
+    return "AppImage / program"
+
+
+def program_path_hint():
+    return PROGRAM_HINT["windows" if is_windows() else "mac" if is_mac() else "linux"]
+
+
+def is_program_path(path):
+    """True when `path` is something a Program entry can run: a file, or a
+    macOS .app bundle (a folder)."""
+    path = (path or "").strip()
+    return os.path.isfile(path) or (path.lower().endswith(".app") and os.path.isdir(path))
+
+
+def looks_like_program(path):
+    return (path or "").lower().endswith((".appimage", ".exe", ".lnk", ".app", ".desktop", ".msi"))
+
+
+def program_command(path):
+    """The shell command that launches a Program entry's path."""
+    path = path.strip()
+    low = path.lower()
+    if is_mac() and low.endswith(".app"):
+        return f'open "{path}"'
+    if is_windows() and low.endswith((".lnk", ".url", ".msi")):
+        return f'start "" "{path}"'
+    if is_linux() and low.endswith(".desktop"):
+        return f'gio launch "{path}"'
+    return f'"{path}"'

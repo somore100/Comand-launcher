@@ -6,7 +6,7 @@ import subprocess
 import threading
 from .browser import prefix_exec_cmd
 from .data import _load_config
-from .execution import resolve_exec_command
+from .execution import is_program_path, program_command, resolve_exec_command
 from .privilege import ADMIN_REMEMBER, apply_admin, command_allowed, find_sudo_calls
 from .placeholders import PlaceholderDialog, extract_placeholders, fill_placeholders
 
@@ -108,14 +108,15 @@ def run_entry(entry, log=None):
             command = fill_placeholders(command, dialog.result)
 
     if entry_type == "appimage":
-        if not os.path.isfile(command):
-            messagebox.showerror("AppImage not found", command)
+        if not is_program_path(command):
+            messagebox.showerror("Program not found", command)
             return
-        try:
-            os.chmod(command, 0o755)
-        except OSError as e:
-            messagebox.showwarning("Couldn't set executable bit", str(e))
-        exec_cmd = f'"{command}"'
+        if os.path.isfile(command) and not command.lower().endswith((".desktop", ".exe", ".lnk", ".msi")):
+            try:
+                os.chmod(command, 0o755)
+            except OSError as e:
+                messagebox.showwarning("Couldn't set executable bit", str(e))
+        exec_cmd = program_command(command)
     else:
         exec_cmd = resolve_exec_command(command)
 

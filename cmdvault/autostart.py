@@ -2,7 +2,7 @@
 import os
 import sys
 from .browser import browser_env_line
-from .execution import resolve_exec_command
+from .execution import program_command, resolve_exec_command
 from .privilege import apply_admin
 from .platform_utils import is_linux, is_windows
 
@@ -157,7 +157,8 @@ def set_entry_autostart(entry, enabled):
 
     command = entry["command"]
     working_dir = entry.get("working_dir") or ""
-    is_appimage_entry = entry.get("entry_type") == "appimage"
+    is_program_entry = entry.get("entry_type") == "appimage"
+    is_appimage_entry = is_program_entry and command.lower().endswith(".appimage")
     if is_appimage_entry and is_linux():
         # See the matching comment in set_app_autostart(): launching an
         # AppImage straight from Exec= races against the desktop session's
@@ -165,8 +166,8 @@ def set_entry_autostart(entry, enabled):
         # run avoids that; chmod +x guards against a lost executable bit
         # (e.g. after re-downloading or moving the file).
         exec_cmd = f'chmod +x "{command}" 2>/dev/null || true\n"{command}" --appimage-extract-and-run'
-    elif is_appimage_entry:
-        exec_cmd = f'"{command}"'
+    elif is_program_entry:
+        exec_cmd = program_command(command)
     else:
         exec_cmd = resolve_exec_command(command)
 

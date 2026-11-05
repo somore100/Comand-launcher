@@ -17,7 +17,7 @@ class FeedbackDialog(tk.Toplevel):
         self._sending = False
         self.title("Leave Feedback")
         self.configure(bg=COLOR_BG)
-        self.resizable(False, True)
+        self.resizable(True, True)
         self.transient(master)
         self.grab_set()
         self.bind("<Escape>", lambda e: self.destroy())

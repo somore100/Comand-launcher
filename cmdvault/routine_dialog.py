@@ -128,7 +128,7 @@ class StepDialog(tk.Toplevel):
 class RoutineDialog(tk.Toplevel):
     """The step list. `result` is {'steps': [...], 'show_browser': bool} on OK."""
 
-    def __init__(self, master, entry_id, name, routine=None, profile_dir=None):
+    def __init__(self, master, entry_id, name, routine=None, profile_dir=None, start_recording=False):
         super().__init__(master)
         self.entry_id = entry_id
         self.profile_dir = profile_dir
@@ -142,7 +142,7 @@ class RoutineDialog(tk.Toplevel):
 
         self.title("Edit steps")
         self.configure(bg=COLOR_BG)
-        self.resizable(False, True)
+        self.resizable(True, True)
         self.transient(master)
         self.grab_set()
         self.bind("<Escape>", lambda e: self.destroy())
@@ -242,6 +242,8 @@ class RoutineDialog(tk.Toplevel):
         fit_dialog(self, master)
         self.protocol("WM_DELETE_WINDOW", self._close)
         self.bind("<Escape>", lambda e: self._close())
+        if start_recording:
+            self.after(400, self._record)
 
     # -- kind / templates / recording ---------------------------------------
     def _types(self):
@@ -283,6 +285,8 @@ class RoutineDialog(tk.Toplevel):
                 return
 
     def _record(self):
+        if self.kind != "web" and not self._rec_proc:
+            return
         if self._rec_proc:
             self._rec_proc.terminate()
             return
@@ -413,9 +417,9 @@ class RoutineDialog(tk.Toplevel):
     # -- setup + test run ---------------------------------------------------
     def _refresh_setup(self):
         if self.kind_var.get() == "app":
-            self.setup_var.set("Needs the 'xdotool' program (Fedora: sudo dnf install xdotool; Ubuntu/Pop!_OS: "
-                               "sudo apt install xdotool) and a normal X11 desktop session. Windows, macOS and "
-                               "pure Wayland programs aren't supported yet.")
+            self.setup_var.set("Linux needs the 'xdotool' package (Fedora: sudo dnf install xdotool; Ubuntu/"
+                               "Pop!_OS: sudo apt install xdotool) and an X11 session. macOS: allow Command Vault "
+                               "under Privacy & Security > Accessibility. Windows needs nothing extra.")
             self.setup_btn.pack_forget()
             return
         self.setup_btn.pack(side="left", before=self.test_btn)

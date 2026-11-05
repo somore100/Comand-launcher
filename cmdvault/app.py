@@ -534,7 +534,7 @@ class CommandVault(tk.Tk):
         for i, cmd in enumerate(visible):
             mode_label = "Silent" if cmd.get("run_mode") == "silent" else "Terminal"
             if cmd.get("entry_type") == "appimage":
-                mode_label += " \u00b7 AppImage"
+                mode_label += " \u00b7 Program"
             boot_label = "\u2713" if cmd.get("autostart") else ""
             schedule_label = cmd.get("schedule_time", "") if cmd.get("schedule_enabled") else ""
             tags = ["even" if i % 2 else "odd"]

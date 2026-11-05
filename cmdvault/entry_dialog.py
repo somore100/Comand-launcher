@@ -14,8 +14,10 @@ from .browser import BROWSER_PROFILE_ENV, browser_profile_path
 from .data import _load_config
 from .hotkeys import HotkeyRecorderDialog
 from .placeholders import extract_placeholders
-from .platform_utils import is_linux, is_windows
+from .platform_utils import is_linux, is_mac, is_windows
 from . import routine as rt
+from .execution import looks_like_program, program_path_hint, program_type_label
+from .automation_help_dialog import AutomationHelpDialog
 from .routine_dialog import RoutineDialog
 from .privilege import ADMIN_ASK, ADMIN_OFF, ADMIN_REMEMBER, admin_choice_labels, plan_admin, supports_admin
 from .scrollframe import CollapsibleSection, ScrollableBody, fit_dialog
@@ -76,7 +78,7 @@ class AppPicker(tk.Toplevel):
 
         if not self.all_apps:
             msg = ("No installed apps were found to scan on this system."
-                   if (is_linux() or is_windows())
+                   if (is_linux() or is_windows() or is_mac())
                    else "App scanning isn't supported on this OS yet.")
             tk.Label(self, text=msg, bg=COLOR_BG, fg=COLOR_SUBTEXT, font=FONT_SMALL,
                      wraplength=380, justify="left").pack(padx=14, pady=10, anchor="w")
@@ -187,7 +189,7 @@ class EntryDialog(tk.Toplevel):
 
         self.title("Edit Entry" if entry else "Add Entry")
         self.configure(bg=COLOR_BG)
-        self.resizable(False, True)
+        self.resizable(True, True)
         self.transient(master)
         self.grab_set()
         self.bind("<Escape>", lambda e: self._cancel())
@@ -195,6 +197,7 @@ class EntryDialog(tk.Toplevel):
         scroll = ScrollableBody(self)
         scroll.pack(fill="both", expand=True)
         body = scroll.inner
+        body.grid_columnconfigure(1, weight=1)
 
         pad = {"padx": 16, "pady": (10, 0)}
 
@@ -230,7 +233,7 @@ class EntryDialog(tk.Toplevel):
                         bg=COLOR_BG, fg=COLOR_TEXT, selectcolor=COLOR_PANEL, activebackground=COLOR_BG,
                         activeforeground=COLOR_TEXT, font=FONT_SMALL, command=self._sync_command_widget
                         ).pack(side="left")
-        tk.Radiobutton(type_frame, text="AppImage", variable=self.type_var, value="appimage",
+        tk.Radiobutton(type_frame, text=program_type_label(), variable=self.type_var, value="appimage",
                         bg=COLOR_BG, fg=COLOR_TEXT, selectcolor=COLOR_PANEL, activebackground=COLOR_BG,
                         activeforeground=COLOR_TEXT, font=FONT_SMALL, command=self._sync_command_widget
                         ).pack(side="left", padx=(12, 0))
@@ -268,6 +271,9 @@ class EntryDialog(tk.Toplevel):
         browse_frame.grid(row=6, column=0, columnspan=2, sticky="w", padx=16, pady=(4, 0))
         tk.Button(browse_frame, text="Browse for file...", command=self._browse_command, bg=COLOR_PANEL,
                   fg=COLOR_TEXT, relief="flat", font=FONT_SMALL, padx=8).pack(side="left")
+        tk.Button(browse_frame, text="\u24D8 Automation", command=lambda: AutomationHelpDialog(self),
+                  bg=COLOR_PANEL, fg=COLOR_ACCENT, relief="flat", font=FONT_SMALL, padx=8
+                  ).pack(side="left", padx=(6, 0))
         tk.Button(browse_frame, text="+ Add Input Box", command=self._add_input_box, bg=COLOR_PANEL,
                   fg=COLOR_TEXT, relief="flat", font=FONT_SMALL, padx=8).pack(side="left", padx=(6, 0))
         tk.Label(browse_frame, text=".sh / .bat / .ps1 / .py files auto-run with the right interpreter",
@@ -287,6 +293,9 @@ class EntryDialog(tk.Toplevel):
                  font=FONT_NORMAL, justify="left", anchor="w", wraplength=420).pack(anchor="w")
         tk.Button(self.routine_frame, text="Edit steps...", command=self._edit_routine, bg=COLOR_ACCENT_DIM,
                   fg=COLOR_TEXT, relief="flat", font=FONT_NORMAL, padx=12, pady=4).pack(anchor="w", pady=(6, 0))
+        tk.Button(self.routine_frame, text="\u25CF Record a website...", command=lambda: self._edit_routine(True),
+                  bg=COLOR_PANEL, fg=COLOR_RED, relief="flat", font=FONT_NORMAL, padx=12, pady=4
+                  ).pack(anchor="w", pady=(4, 0))
         tk.Label(self.routine_frame,
                  text="Build a list of steps for a website or a desktop program (open, click, type, wait, press keys) with simple forms, or record them. "
                       "Command Vault turns it into a script and runs it like any entry, including on a schedule "
@@ -512,11 +521,12 @@ class EntryDialog(tk.Toplevel):
         self.entry_hotkey_pynput = ""
         self.entry_hotkey_display_var.set("Not set")
 
-    def _edit_routine(self):
+    def _edit_routine(self, start_recording=False):
         name = self.name_var.get().strip() or "routine"
         probe = {"id": self.entry_id, "browser_profile": True,
                  "browser_profile_dir": self.browser_profile_dir_var.get()}
-        dialog = RoutineDialog(self, self.entry_id, name, self.routine, profile_dir=browser_profile_path(probe))
+        dialog = RoutineDialog(self, self.entry_id, name, self.routine, profile_dir=browser_profile_path(probe),
+                               start_recording=start_recording)
         self.wait_window(dialog)
         if dialog.result:
             self.routine = dialog.result
@@ -540,7 +550,7 @@ class EntryDialog(tk.Toplevel):
         for w in self._cmd_widgets:
             w.grid()
         if self.type_var.get() == "appimage":
-            self.path_label_var.set("AppImage path")
+            self.path_label_var.set(program_path_hint())
         else:
             self.path_label_var.set("Command (supports multiple lines)")
 
@@ -563,11 +573,16 @@ class EntryDialog(tk.Toplevel):
         self._sync_command_widget()
 
     def _browse_command(self):
-        path = filedialog.askopenfilename(title="Select script or AppImage")
+        if self.type_var.get() == "appimage" and is_mac():
+            path = filedialog.askdirectory(title="Select an app (.app)", initialdir="/Applications")
+            if not path:
+                path = filedialog.askopenfilename(title="Or select a program file")
+        else:
+            path = filedialog.askopenfilename(title="Select a script or program")
         if path:
             self.command_text.delete("1.0", tk.END)
             self.command_text.insert("1.0", path)
-            if path.lower().endswith(".appimage"):
+            if looks_like_program(path):
                 self.type_var.set("appimage")
                 self._sync_command_widget()
 

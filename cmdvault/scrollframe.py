@@ -30,6 +30,14 @@ class ScrollableBody(tk.Frame):
         self.bind("<Enter>", self._bind_wheel)
         self.bind("<Leave>", self._unbind_wheel)
 
+    def sync(self):
+        """Make the canvas exactly as big as its content right now, so the
+        dialog's requested size is the real one (Configure events haven't been
+        processed yet when a dialog is first sized)."""
+        self.update_idletasks()
+        self.canvas.configure(width=self.inner.winfo_reqwidth(), height=self.inner.winfo_reqheight())
+        self.update_idletasks()
+
     def _on_yscroll(self, first, last):
         self.scrollbar.set(first, last)
         if float(first) <= 0.0 and float(last) >= 1.0:
@@ -40,7 +48,7 @@ class ScrollableBody(tk.Frame):
     def _on_inner_configure(self, _event=None):
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
         # Canvas has no natural height; track the content so the dialog can size to it.
-        self.canvas.configure(height=self.inner.winfo_reqheight())
+        self.canvas.configure(width=self.inner.winfo_reqwidth(), height=self.inner.winfo_reqheight())
 
     def _on_canvas_configure(self, event):
         self.canvas.itemconfigure(self._window, width=event.width)
@@ -81,6 +89,9 @@ class ScrollableBody(tk.Frame):
 def fit_dialog(dialog, parent=None, max_height_fraction=0.92):
     """Size `dialog` to its content, capped to the screen height, centred over `parent`."""
     dialog.update_idletasks()
+    for child in dialog.winfo_children():
+        if isinstance(child, ScrollableBody):
+            child.sync()
     parent = parent or dialog.master
     screen_w = dialog.winfo_screenwidth()
     screen_h = dialog.winfo_screenheight()
@@ -94,7 +105,8 @@ def fit_dialog(dialog, parent=None, max_height_fraction=0.92):
     x = max(0, min(px, screen_w - width))
     y = max(0, min(py, screen_h - height - 40))
     dialog.geometry(f"{width}x{height}+{x}+{y}")
-    dialog.minsize(min(width, 360), min(height, 240))
+    # Resizable by the user, but never smaller than the content needs (width) or 320 px tall.
+    dialog.minsize(width, min(height, 320))
 
 
 class CollapsibleSection(tk.Frame):

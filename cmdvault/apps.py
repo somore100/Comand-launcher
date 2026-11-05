@@ -2,7 +2,7 @@
 import glob
 import os
 import re
-from .platform_utils import is_linux, is_windows
+from .platform_utils import is_linux, is_mac, is_windows
 
 
 # Installed-app discovery (for "Pick Installed App")
@@ -56,7 +56,22 @@ def find_windows_apps():
     return apps
 
 
+def find_mac_apps():
+    apps = []
+    for d in ("/Applications", "/System/Applications", "/Applications/Utilities", os.path.expanduser("~/Applications")):
+        if not os.path.isdir(d):
+            continue
+        for fname in os.listdir(d):
+            if fname.lower().endswith(".app"):
+                full = os.path.join(d, fname)
+                apps.append((fname[:-4], f'open "{full}"', full))
+    apps.sort(key=lambda a: a[0].lower())
+    return apps
+
+
 def find_installed_apps():
+    if is_mac():
+        return find_mac_apps()
     if is_linux():
         return find_linux_apps()
     if is_windows():
