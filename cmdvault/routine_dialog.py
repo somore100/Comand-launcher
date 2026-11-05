@@ -219,7 +219,7 @@ class RoutineDialog(tk.Toplevel):
         btns = tk.Frame(body, bg=COLOR_BG)
         btns.pack(anchor="w", padx=16, pady=(6, 0))
         self.setup_row = btns
-        self.setup_btn = tk.Button(btns, text="Set up browser automation", command=self._setup, bg=COLOR_PANEL,
+        self.setup_btn = tk.Button(btns, text="Set up browser automation", command=self._install_automation, bg=COLOR_PANEL,
                                    fg=COLOR_TEXT, relief="flat", font=FONT_SMALL, padx=10, pady=3)
         self.setup_btn.pack(side="left")
         self.test_btn = tk.Button(btns, text="▶ Test run", command=self._test, bg=COLOR_ACCENT_DIM,
@@ -424,11 +424,14 @@ class RoutineDialog(tk.Toplevel):
             return
         self.setup_btn.pack(side="left", before=self.test_btn)
         if rt.automation_python():
-            self.setup_var.set("Browser automation is set up on this computer.")
+            self.setup_var.set("Browser automation is set up. Routines use Playwright's own Chromium (separate from your "
+                               "normal browser, with its own saved logins).")
             self.setup_btn.configure(text="Reinstall / update")
         else:
-            self.setup_var.set("One-time setup needed: this downloads a private copy of Playwright and a browser "
-                               "(about 150 MB) into Command Vault's own folder. Nothing else on your system changes.")
+            self.setup_var.set("One-time setup needed: this downloads a private copy of Playwright and its own "
+                               "Chromium browser (about 150 MB) into Command Vault's own folder. Routines use "
+                               "that Chromium, not your normal Firefox/Chrome, and nothing else on your system "
+                               "changes.")
             self.setup_btn.configure(text="Set up browser automation")
 
     def _say(self, text):
@@ -449,7 +452,7 @@ class RoutineDialog(tk.Toplevel):
         self.setup_btn.configure(state=state)
         self.test_btn.configure(state=state)
 
-    def _setup(self):
+    def _install_automation(self):
         if self._busy:
             return
         self._set_busy(True)

@@ -1,7 +1,7 @@
 """automation_help_dialog -- the (i) window: how scripts can drive websites and
 desktop programs through the cvauto helper library, with copyable examples."""
 import tkinter as tk
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, ttk
 from . import routine as rt
 from .scrollframe import ScrollableBody, fit_dialog
 from .theme import (COLOR_ACCENT, COLOR_ACCENT_DIM, COLOR_BG, COLOR_PANEL, COLOR_SIDEBAR, COLOR_SUBTEXT,
@@ -41,14 +41,17 @@ cvauto.app.type_text("example.com")
 cvauto.app.keys("Return")
 '''
 
-NOTES = ("Where it works\n"
+NOTES = (
          "- Websites: needs Playwright. Click \"Set up browser automation\" in Edit steps once, then run scripts "
-         "with the private Python shown below.\n"
+         "with the private Python shown under \"Where things are\".\n"
          "- Linux programs: needs the xdotool package and an X11 session (XWayland windows work, native Wayland "
          "ones don't).\n"
          "- Windows programs: uses PowerShell, nothing to install.\n"
          "- macOS programs: uses osascript; allow Terminal/Command Vault under System Settings > Privacy & "
          "Security > Accessibility.\n"
+         "Browser: websites are driven in Playwright's own copy of Chromium that Command Vault downloads into its "
+         "private folder (about 150 MB). It is separate from your Firefox/Chrome, so your normal logins and "
+         "bookmarks aren't touched; the \"Stay logged in\" profile keeps the bot's own logins.\n"
          "Passwords: never put them in a script. Log in once by hand with \"Stay logged in\" turned on.")
 
 
@@ -81,8 +84,8 @@ class AutomationHelpDialog(tk.Toplevel):
                       None)
         self._section(body, "Website example", WEB_EXAMPLE.format(lib=self.lib_folder), "web_example.py")
         self._section(body, "Desktop program example", APP_EXAMPLE.format(lib=self.lib_folder), "app_example.py")
-        tk.Label(body, text=NOTES, bg=COLOR_BG, fg=COLOR_SUBTEXT, font=FONT_SMALL, wraplength=520,
-                 justify="left").pack(anchor="w", padx=16, pady=(12, 14))
+        self._section(body, "Where it works", NOTES, None, wrap=True)
+        tk.Frame(body, bg=COLOR_BG, height=10).pack()
 
         bar = tk.Frame(scroll.footer, bg=COLOR_BG)
         bar.pack(fill="x", padx=16, pady=(6, 12))
@@ -90,14 +93,21 @@ class AutomationHelpDialog(tk.Toplevel):
                   font=FONT_NORMAL, padx=14, pady=4).pack(side="right")
         fit_dialog(self, master)
 
-    def _section(self, body, title, text, save_name):
+    def _section(self, body, title, text, save_name, wrap=False):
         tk.Label(body, text=title, bg=COLOR_BG, fg=COLOR_TEXT, font=("Segoe UI", 10, "bold")
                  ).pack(anchor="w", padx=16, pady=(12, 2))
-        box = tk.Text(body, height=min(14, text.count("\n") + 1), width=72, font=FONT_MONO, bg=COLOR_PANEL,
-                      fg=COLOR_TEXT, relief="flat", wrap="none")
+        holder = tk.Frame(body, bg=COLOR_BG)
+        holder.pack(anchor="w", padx=16, fill="x")
+        lines = text.count("\n") + 1 + (sum(len(l) // 80 for l in text.splitlines()) if wrap else 0)
+        box = tk.Text(holder, height=min(16, lines), width=80, font=FONT_MONO if not wrap else FONT_SMALL,
+                      bg=COLOR_PANEL, fg=COLOR_TEXT, relief="flat", wrap="word" if wrap else "none")
         box.insert("1.0", text)
-        box.configure(state="disabled")
-        box.pack(anchor="w", padx=16)
+        box.configure(state="disabled")  # read-only but still selectable/copyable
+        box.pack(side="top", fill="x")
+        if not wrap:
+            xs = ttk.Scrollbar(holder, orient="horizontal", command=box.xview)
+            box.configure(xscrollcommand=xs.set)
+            xs.pack(side="top", fill="x")
         row = tk.Frame(body, bg=COLOR_BG)
         row.pack(anchor="w", padx=16, pady=(4, 0))
         tk.Button(row, text="Copy", command=lambda: self._copy(text), bg=COLOR_PANEL, fg=COLOR_TEXT,

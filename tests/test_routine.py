@@ -32,14 +32,11 @@ def test_validation():
     assert "Step 2" in rt.validate_steps([rt.EXAMPLE_STEPS[0], {"type": "click", "target": ""}])
 
 
-def _load_script(tmp_path, steps, show=True):
-    src = rt.generate_script("abc", 'My "bot"', {"steps": steps, "show_browser": show})
-    compile(src, "generated.py", "exec")
-    path = tmp_path / "gen.py"
-    path.write_text(src)
-    spec = importlib.util.spec_from_file_location("gen", path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+def _cvauto():
+    from cmdvault.cvauto_source import SOURCE
+    mod = types.ModuleType("cvauto")
+    exec(compile(SOURCE, "cvauto.py", "exec"), mod.__dict__)
+    mod.time = types.SimpleNamespace(sleep=lambda s: None, time=lambda: 0.0)
     return mod
 
 
@@ -51,6 +48,7 @@ class FakePage:
         self.calls.append(("goto", url))
 
     def locator(self, sel):
+        self.last = sel
         return self
 
     @property
@@ -75,34 +73,96 @@ class FakePage:
         self.calls.append(("click", self.last))
 
 
-def test_generated_script_runs_goto_and_click(tmp_path):
-    mod = _load_script(tmp_path, [{"type": "goto", "url": "https://x.test"},
-                                  {"type": "click", "target": "Start", "by": "text"}])
+def _web(cv, page):
+    b = cv.Web()
+    b.page = page
+    return b
+
+
+def test_web_goto_and_click():
+    cv = _cvauto()
     page = FakePage()
-    assert mod.run_step(page, mod.STEPS[0]) == (True, None)
-    assert mod.run_step(page, mod.STEPS[1])[0] is True
+    b = _web(cv, page)
+    cv._web_step(b, {"type": "goto", "url": "https://x.test"})
+    cv._web_step(b, {"type": "click", "target": "Start", "by": "text"})
     assert page.calls == [("goto", "https://x.test"), ("click", "Start")]
 
 
-def test_alternative_target_is_tried(tmp_path):
-    mod = _load_script(tmp_path, [{"type": "click", "target": "Start", "alt": "Start server", "by": "text"}])
+def test_web_alternative_target_is_tried():
+    cv = _cvauto()
     page = FakePage(fail_for={"Start"})
-    ok, err = mod.run_step(page, mod.STEPS[0])
-    assert ok and page.calls == [("click", "Start server")]
+    cv._web_step(_web(cv, page), {"type": "click", "target": "Start", "alt": "Start server", "by": "text"})
+    assert page.calls == [("click", "Start server")]
 
 
-def test_failure_is_reported_and_retry_repeats(tmp_path, monkeypatch=None):
-    mod = _load_script(tmp_path, [{"type": "click", "target": "Nope", "by": "text", "on_fail": "retry", "retries": 2}])
-    mod.time = types.SimpleNamespace(sleep=lambda s: None)
+def test_web_failure_raises_steperror_and_retry_repeats():
+    cv = _cvauto()
     page = FakePage(fail_for={"Nope"})
-    ok, err = mod.run_step(page, mod.STEPS[0])
-    assert not ok and "not found" in str(err)
+    step = {"type": "click", "target": "Nope", "by": "text", "on_fail": "retry", "retries": 2}
+    try:
+        cv._web_step(_web(cv, page), step)
+        assert False, "should have failed"
+    except cv.StepError as e:
+        assert "not found" in str(e)
+
+
+def test_run_routine_skip_and_fail_exit_codes():
+    cv = _cvauto()
+    cv._app_step = lambda a, s: (_ for _ in ()).throw(cv.StepError("boom")) if s["type"] == "launch" else None
+    steps = [{"type": "launch", "command": "x", "on_fail": "skip"}, {"type": "wait", "seconds": 0}]
+    assert cv.run_routine(steps, kind="app") == 0
+    steps[0]["on_fail"] = "stop"
+    assert cv.run_routine(steps, kind="app") == 1
 
 
 def test_script_embeds_name_safely_and_steps_roundtrip(tmp_path):
-    mod = _load_script(tmp_path, [{"type": "fill", "target": "Email", "value": "a'b\"c\\d", "by": "text"}])
-    assert mod.STEPS[0]["value"] == "a'b\"c\\d"
-    assert mod.STEPS[0]["desc"].startswith("Type")
+    src = rt.generate_script("abc", 'My "bot"', {"kind": "web", "show_browser": False,
+                                                  "steps": [{"type": "fill", "target": "Email",
+                                                             "value": "a'b\"c\\d", "by": "text"}]})
+    compile(src, "generated.py", "exec")
+    ns = {}
+    # run only the STEPS assignment, not the import of cvauto / main call
+    steps_line = next(l for l in src.splitlines() if l.startswith("STEPS ="))
+    exec("import json\n" + steps_line, ns)
+    assert ns["STEPS"][0]["value"] == "a'b\"c\\d" and ns["STEPS"][0]["desc"].startswith("Type")
+    assert "show_browser=False" in src and "kind='web'" in src
+
+
+def test_cvauto_source_compiles_and_lib_is_written(tmp_path, monkeypatch):
+    monkeypatch.setattr(rt, "app_config_dir", lambda: str(tmp_path))
+    path = rt.write_lib()
+    assert os.path.isfile(path) and rt.write_lib() == path
+    compile(open(path).read(), path, "exec")
+
+
+def test_parse_keys_and_platform_keystrokes():
+    cv = _cvauto()
+    assert cv.parse_keys("ctrl+shift+t") == ({"ctrl", "shift"}, "t")
+    assert cv.parse_keys("Return") == (set(), "Return")
+    seen = []
+    cv.app._ps = lambda script: seen.append(script) or ""
+    cv.sys = types.SimpleNamespace(platform="win32")
+    cv.app.keys("ctrl+shift+t")
+    cv.app.keys("alt+F4")
+    cv.app.type_text("a+b")
+    assert "SendWait('^+t')" in seen[0] and "SendWait('%{F4}')" in seen[1] and "a{+}b" in seen[2]
+    mac = []
+    cv.app._osa = lambda script: mac.append(script) or ""
+    cv.sys = types.SimpleNamespace(platform="darwin")
+    cv.app.keys("cmd+t")
+    cv.app.keys("Return")
+    assert 'keystroke "t" using {command down}' in mac[0] and "key code 36" in mac[1]
+
+
+def test_linux_app_calls_use_xdotool():
+    cv = _cvauto()
+    seen = []
+    cv.sys = types.SimpleNamespace(platform="linux")
+    cv.app._xdo = lambda *a: seen.append(a) or "42"
+    cv.app.keys("ctrl+t")
+    cv.app.focus("Firefox")
+    assert seen == [("key", "--clearmodifiers", "ctrl+t"), ("search", "--onlyvisible", "--name", "Firefox"),
+                    ("windowactivate", "--sync", "42")]
 
 
 def test_routine_command_quotes_paths():
@@ -136,32 +196,3 @@ def test_recorder_script_compiles():
     compile(rt._RECORDER, "recorder", "exec")
 
 
-def _load_app(tmp_path, steps):
-    src = rt.generate_script("abc", "app", {"kind": "app", "steps": steps})
-    path = tmp_path / "app.py"
-    path.write_text(src)
-    spec = importlib.util.spec_from_file_location("appgen", path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-def test_app_script_alt_window_and_failure(tmp_path):
-    mod = _load_app(tmp_path, [{"type": "focus_window", "target": "Nope", "alt": "Yes"}])
-    calls = []
-    mod.find_window = lambda t: "42" if t == "Yes" else None
-    mod.xdo = lambda *a: calls.append(a) or types.SimpleNamespace(returncode=0, stderr="", stdout="")
-    assert mod.run_step(mod.STEPS[0])[0] is True
-    assert calls == [("windowactivate", "--sync", "42")]
-    mod.find_window = lambda t: None
-    mod.time = types.SimpleNamespace(sleep=lambda s: None, time=lambda: 0)
-    ok, err = mod.run_step(mod.STEPS[0])
-    assert not ok and "no window" in str(err)
-
-
-def test_app_script_keys_uses_xdotool(tmp_path):
-    mod = _load_app(tmp_path, [{"type": "keys", "keys": "ctrl+shift+t"}])
-    seen = []
-    mod.xdo = lambda *a: seen.append(a) or types.SimpleNamespace(returncode=0, stderr="", stdout="")
-    assert mod.run_step(mod.STEPS[0])[0] is True
-    assert seen == [("key", "--clearmodifiers", "ctrl+shift+t")]
