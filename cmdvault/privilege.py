@@ -13,8 +13,15 @@ Three per-entry modes (Linux/macOS):
             rule covers only those exact commands. Runs then use `sudo -n`, so
             a missing rule fails immediately instead of hanging on a prompt.
 
-Windows has no sudo; elevation there (UAC / a highest-privileges scheduled
-task) is not implemented yet.
+Windows (untested on a real machine) has no sudo, so the same three modes map to:
+  ask       a UAC prompt each run (PowerShell Start-Process -Verb RunAs).
+  remember  one UAC approval at save time copies the entry's command into a
+            batch file under ProgramData (admin-writable only) and registers a
+            "run with highest privileges" scheduled task for it. Runs then start
+            that task with `schtasks /run`, with no prompt. Like the sudoers
+            rule, it covers exactly the saved command, so {{placeholders}} are
+            refused. The elevated process runs in its own window; its output
+            isn't captured.
 """
 import getpass
 import hashlib
@@ -23,7 +30,7 @@ import re
 import shlex
 import shutil
 import subprocess
-from .platform_utils import is_linux, is_mac
+from .platform_utils import is_linux, is_mac, is_windows
 
 ADMIN_OFF = "off"
 ADMIN_ASK = "ask"
@@ -40,7 +47,18 @@ _BAD_ARG_CHARS = set("*?[]\\\"'`$<>&|;(){}\n\r\t")
 
 
 def supports_admin():
-    return is_linux() or is_mac()
+    return is_linux() or is_mac() or is_windows()
+
+
+def admin_choice_labels():
+    """(value, label) pairs for the Edit Entry dialog, worded per OS."""
+    if is_windows():
+        return [(ADMIN_OFF, "Off \u2014 run normally"),
+                (ADMIN_ASK, "Ask Windows for permission each run (UAC)"),
+                (ADMIN_REMEMBER, "Don't ask \u2014 approve once (runs through an elevated task)")]
+    return [(ADMIN_OFF, "Off \u2014 leave sudo as written"),
+            (ADMIN_ASK, "Ask for the password each run"),
+            (ADMIN_REMEMBER, "Don't ask \u2014 allow these exact sudo commands (set up once)")]
 
 
 # ---------------------------------------------------------------------------
@@ -204,6 +222,8 @@ def build_sudoers_text(user, specs):
 def plan_admin(entry):
     """Everything 'remember' needs for an entry: {'specs', 'problems', 'text',
     'user'}. Pure apart from reading files; never touches the system."""
+    if is_windows():
+        return _windows_plan(entry)
     calls, problems = find_sudo_calls(entry_sudo_text(entry.get("command", "")))
     specs, more = build_rule_specs(calls)
     problems = problems + more
@@ -214,6 +234,94 @@ def plan_admin(entry):
         problems.append("No 'sudo' command found in this entry, so there is nothing to remember.")
     return {"specs": specs, "problems": problems, "user": user,
             "text": build_sudoers_text(user, specs) if specs else ""}
+
+
+# ---------------------------------------------------------------------------
+# Windows: elevated scheduled task
+# ---------------------------------------------------------------------------
+def _safe_id(entry_id):
+    return re.sub(r"[^A-Za-z0-9_-]", "_", entry_id or "entry")
+
+
+def win_task_name(entry_id):
+    return f"CommandVault-Admin-{_safe_id(entry_id)}"
+
+
+def win_admin_dir():
+    return os.path.join(os.getenv("ProgramData", r"C:\ProgramData"), "CommandVault", "admin")
+
+
+def win_bat_path(entry_id):
+    return os.path.join(win_admin_dir(), _safe_id(entry_id) + ".bat")
+
+
+def _windows_plan(entry):
+    from .execution import resolve_exec_command
+    command = entry.get("command", "")
+    problems = []
+    if "{{" in command:
+        problems.append("{{placeholders}} can't be used with 'Don't ask': the approved command must be fixed.")
+    if not command.strip():
+        problems.append("There is no command to allow.")
+    lines = ["@echo off"]
+    if entry.get("working_dir"):
+        lines.append(f'cd /d "{entry["working_dir"]}"')
+    lines.append(resolve_exec_command(command))
+    text = "\r\n".join(lines) + "\r\n"
+    return {"specs": [("admin", command)] if not problems else [], "problems": problems,
+            "user": "", "text": text}
+
+
+def _run_elevated_powershell(ps_body):
+    """Runs a PowerShell script elevated (one UAC prompt). Returns (ok, message)."""
+    import tempfile
+    fd, path = tempfile.mkstemp(suffix=".ps1")
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(ps_body)
+    launcher = (f"$p = Start-Process powershell -Verb RunAs -Wait -PassThru -ArgumentList "
+                f"'-NoProfile','-ExecutionPolicy','Bypass','-File','{path}'; exit $p.ExitCode")
+    try:
+        res = subprocess.run(["powershell", "-NoProfile", "-Command", launcher], capture_output=True,
+                             text=True, timeout=180)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return False, str(e)
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    if res.returncode == 0:
+        return True, ""
+    detail = (res.stderr or res.stdout or "").strip()
+    return False, ("Administrator approval was cancelled or refused." if not detail or "canceled" in detail.lower()
+                   else detail)
+
+
+def _windows_install(entry, plan):
+    import tempfile
+    fd, tmp_bat = tempfile.mkstemp(suffix=".bat")
+    with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
+        f.write(plan["text"])
+    dst, task = win_bat_path(entry["id"]), win_task_name(entry["id"])
+    ps = (f"$ErrorActionPreference = 'Stop'\n"
+          f"New-Item -ItemType Directory -Force -Path '{win_admin_dir()}' | Out-Null\n"
+          f"Copy-Item -Force '{tmp_bat}' '{dst}'\n"
+          f"schtasks /create /tn '{task}' /tr ('\"' + '{dst}' + '\"') /sc ONCE /st 00:00 /rl HIGHEST /f | Out-Null\n"
+          f"exit $LASTEXITCODE\n")
+    try:
+        return _run_elevated_powershell(ps)
+    finally:
+        try:
+            os.remove(tmp_bat)
+        except OSError:
+            pass
+
+
+def _windows_remove(entry):
+    task, dst = win_task_name(entry["id"]), win_bat_path(entry["id"])
+    ps = (f"schtasks /delete /tn '{task}' /f | Out-Null\n"
+          f"Remove-Item -Force -ErrorAction SilentlyContinue '{dst}'\nexit 0\n")
+    return _run_elevated_powershell(ps)
 
 
 def rule_filename(entry_id):
@@ -262,11 +370,15 @@ def _run_elevated(script):
 
 
 def install_rule(entry, plan):
+    if is_windows():
+        return _windows_install(entry, plan)
     dst = os.path.join(SUDOERS_DIR, rule_filename(entry["id"]))
     return _run_elevated(_install_script(plan["text"], dst))
 
 
 def remove_rule(entry):
+    if is_windows():
+        return _windows_remove(entry)
     dst = os.path.join(SUDOERS_DIR, rule_filename(entry["id"]))
     return _run_elevated(_remove_script(dst))
 
@@ -330,7 +442,7 @@ def admin_prefix(entry, silent=False, unattended=False):
     exactly as written. `silent`: no terminal to type a password into.
     `unattended`: scheduled/boot run, nobody to answer a dialog."""
     mode = entry.get("admin_mode", ADMIN_OFF)
-    if not supports_admin():
+    if not supports_admin() or is_windows():
         return ""
     if mode == ADMIN_REMEMBER:
         return 'sudo() { command sudo -n "$@"; }'
@@ -341,6 +453,23 @@ def admin_prefix(entry, silent=False, unattended=False):
     return ""
 
 
+def _windows_apply(entry, exec_cmd, unattended):
+    mode = entry.get("admin_mode", ADMIN_OFF)
+    if mode == ADMIN_REMEMBER:
+        return f'schtasks /run /tn "{win_task_name(entry["id"])}"'
+    if mode == ADMIN_ASK and not unattended:
+        from .data import app_config_dir
+        d = os.path.join(app_config_dir(), "admin")
+        os.makedirs(d, exist_ok=True)
+        bat = os.path.join(d, _safe_id(entry["id"]) + ".bat")
+        with open(bat, "w", encoding="utf-8", newline="") as f:
+            f.write("@echo off\r\n" + exec_cmd + "\r\npause\r\n")
+        return f'powershell -NoProfile -Command "Start-Process -Verb RunAs -FilePath \'{bat}\'"'
+    return exec_cmd
+
+
 def apply_admin(entry, exec_cmd, silent=False, unattended=False):
+    if is_windows():
+        return _windows_apply(entry, exec_cmd, unattended)
     prefix = admin_prefix(entry, silent=silent, unattended=unattended)
     return f"{prefix}\n{exec_cmd}" if prefix else exec_cmd

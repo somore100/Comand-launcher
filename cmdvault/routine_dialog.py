@@ -1,10 +1,11 @@
 """routine_dialog -- the no-code editor for web routines (see routine.py)."""
 import copy
+import json
 import os
 import subprocess
 import threading
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import messagebox, simpledialog, ttk
 from . import routine as rt
 from .scrollframe import ScrollableBody, fit_dialog
 from .theme import (COLOR_ACCENT, COLOR_ACCENT_DIM, COLOR_BG, COLOR_PANEL, COLOR_RED, COLOR_SIDEBAR,
@@ -76,7 +77,7 @@ class StepDialog(tk.Toplevel):
                  insertbackground=COLOR_TEXT, relief="flat").pack(side="left", padx=(4, 0))
 
         self.alt_var = tk.StringVar(value=step.get("alt", ""))
-        if spec.get("uses_by"):
+        if spec.get("uses_alt"):
             lab("Alternative to try if the first isn't found (optional)")
             box(self.alt_var)
             tk.Label(self, text="e.g. the button might say \"Start\" or \"Start server\".", bg=COLOR_BG,
@@ -107,6 +108,7 @@ class StepDialog(tk.Toplevel):
                 step[key] = raw
         if spec.get("uses_by"):
             step["by"] = next(k for k, v in rt.BY_CHOICES.items() if v == self.by_var.get())
+        if spec.get("uses_alt"):
             step["alt"] = self.alt_var.get().strip()
         step["on_fail"] = next(k for k, v in rt.ON_FAIL_CHOICES.items() if v == self.fail_var.get())
         try:
@@ -134,7 +136,9 @@ class RoutineDialog(tk.Toplevel):
         self.result = None
         routine = routine or {}
         self.steps = copy.deepcopy(routine.get("steps", []))
+        self.kind = routine.get("kind", "web")
         self._busy = False
+        self._rec_proc = None
 
         self.title("Edit steps")
         self.configure(bg=COLOR_BG)
@@ -151,6 +155,16 @@ class RoutineDialog(tk.Toplevel):
                  ).pack(anchor="w", padx=16, pady=(14, 0))
         tk.Label(body, text=HELP, bg=COLOR_BG, fg=COLOR_SUBTEXT, font=FONT_SMALL, wraplength=460,
                  justify="left").pack(anchor="w", padx=16, pady=(4, 8))
+
+        kind_row = tk.Frame(body, bg=COLOR_BG)
+        kind_row.pack(anchor="w", padx=16, pady=(0, 6))
+        tk.Label(kind_row, text="This routine controls:", bg=COLOR_BG, fg=COLOR_SUBTEXT, font=FONT_SMALL
+                 ).pack(side="left")
+        self.kind_var = tk.StringVar(value=self.kind)
+        for key, (label, _types) in rt.KINDS.items():
+            tk.Radiobutton(kind_row, text=label, variable=self.kind_var, value=key, command=self._kind_changed,
+                           bg=COLOR_BG, fg=COLOR_TEXT, selectcolor=COLOR_PANEL, activebackground=COLOR_BG,
+                           activeforeground=COLOR_TEXT, font=FONT_SMALL).pack(side="left", padx=(8, 0))
 
         list_row = tk.Frame(body, bg=COLOR_BG)
         list_row.pack(fill="x", padx=16)
@@ -171,25 +185,40 @@ class RoutineDialog(tk.Toplevel):
         add_row.pack(anchor="w", padx=16, pady=(8, 0))
         tk.Label(add_row, text="Add a step:", bg=COLOR_BG, fg=COLOR_SUBTEXT, font=FONT_SMALL).pack(side="left")
         self.add_var = tk.StringVar()
-        add_box = ttk.Combobox(add_row, textvariable=self.add_var, state="readonly", width=30,
-                               values=[s["label"] for s in rt.STEP_TYPES.values()])
-        add_box.pack(side="left", padx=6)
-        add_box.bind("<<ComboboxSelected>>", self._add)
-        tk.Button(add_row, text="Start from an example", command=self._example, bg=COLOR_PANEL, fg=COLOR_TEXT,
-                  relief="flat", font=FONT_SMALL, padx=8).pack(side="left", padx=(8, 0))
+        self.add_box = ttk.Combobox(add_row, textvariable=self.add_var, state="readonly", width=28)
+        self.add_box.pack(side="left", padx=6)
+        self.add_box.bind("<<ComboboxSelected>>", self._add)
+        self.record_btn = tk.Button(add_row, text="\u25CF Record", command=self._record, bg=COLOR_PANEL,
+                                    fg=COLOR_RED, relief="flat", font=FONT_SMALL, padx=8)
+        self.record_btn.pack(side="left", padx=(8, 0))
+
+        tpl_row = tk.Frame(body, bg=COLOR_BG)
+        tpl_row.pack(anchor="w", padx=16, pady=(6, 0))
+        tk.Label(tpl_row, text="Or start from a template:", bg=COLOR_BG, fg=COLOR_SUBTEXT, font=FONT_SMALL
+                 ).pack(side="left")
+        self.tpl_var = tk.StringVar()
+        self.tpl_box = ttk.Combobox(tpl_row, textvariable=self.tpl_var, state="readonly", width=34)
+        self.tpl_box.pack(side="left", padx=6)
+        self.tpl_box.bind("<<ComboboxSelected>>", self._template)
+        self.tpl_note = tk.Label(body, text="", bg=COLOR_BG, fg=COLOR_SUBTEXT, font=("Segoe UI", 8),
+                                 wraplength=460, justify="left")
+        self.tpl_note.pack(anchor="w", padx=16, pady=(2, 0))
 
         self.show_var = tk.BooleanVar(value=routine.get("show_browser", True))
-        tk.Checkbutton(body, text="Show the browser window while it runs (scheduled and boot runs are always hidden)",
+        self.show_check = tk.Checkbutton(body, text="Show the browser window while it runs (scheduled and boot runs are always hidden)",
                        variable=self.show_var, bg=COLOR_BG, fg=COLOR_TEXT, selectcolor=COLOR_PANEL,
                        activebackground=COLOR_BG, activeforeground=COLOR_TEXT, font=FONT_SMALL
-                       ).pack(anchor="w", padx=16, pady=(12, 0))
+                       )
+        self.show_check.pack(anchor="w", padx=16, pady=(12, 0))
 
-        tk.Frame(body, bg=COLOR_PANEL, height=1).pack(fill="x", padx=16, pady=(12, 8))
+        self.sep = tk.Frame(body, bg=COLOR_PANEL, height=1)
+        self.sep.pack(fill="x", padx=16, pady=(12, 8))
         self.setup_var = tk.StringVar()
         tk.Label(body, textvariable=self.setup_var, bg=COLOR_BG, fg=COLOR_SUBTEXT, font=FONT_SMALL,
                  wraplength=460, justify="left").pack(anchor="w", padx=16)
         btns = tk.Frame(body, bg=COLOR_BG)
         btns.pack(anchor="w", padx=16, pady=(6, 0))
+        self.setup_row = btns
         self.setup_btn = tk.Button(btns, text="Set up browser automation", command=self._setup, bg=COLOR_PANEL,
                                    fg=COLOR_TEXT, relief="flat", font=FONT_SMALL, padx=10, pady=3)
         self.setup_btn.pack(side="left")
@@ -204,12 +233,125 @@ class RoutineDialog(tk.Toplevel):
         bar.pack(fill="x", padx=16, pady=(6, 12))
         tk.Button(bar, text="Done", command=self._done, bg=COLOR_ACCENT, fg=COLOR_SIDEBAR,
                   font=("Segoe UI", 10, "bold"), relief="flat", padx=14, pady=4).pack(side="right")
-        tk.Button(bar, text="Cancel", command=self.destroy, bg=COLOR_ACCENT_DIM, fg=COLOR_TEXT, relief="flat",
+        tk.Button(bar, text="Cancel", command=self._close, bg=COLOR_ACCENT_DIM, fg=COLOR_TEXT, relief="flat",
                   font=FONT_NORMAL, padx=14, pady=4).pack(side="right", padx=(0, 8))
 
+        self._kind_changed(initial=True)
         self._refresh()
         self._refresh_setup()
         fit_dialog(self, master)
+        self.protocol("WM_DELETE_WINDOW", self._close)
+        self.bind("<Escape>", lambda e: self._close())
+
+    # -- kind / templates / recording ---------------------------------------
+    def _types(self):
+        return rt.KINDS[self.kind_var.get()][1]
+
+    def _kind_changed(self, initial=False):
+        new = self.kind_var.get()
+        if not initial and new != self.kind and self.steps:
+            if not messagebox.askyesno("Change type", "Steps for a website and for a desktop program are "
+                                                      "different. Clear the current steps?", parent=self):
+                self.kind_var.set(self.kind)
+                return
+            self.steps = []
+        self.kind = new
+        self.add_box.configure(values=[t["label"] for t in self._types().values()])
+        self.tpl_box.configure(values=[n for n, _d, _s in rt.get_templates()[new]])
+        self.tpl_note.configure(text="")
+        web = new == "web"
+        self.record_btn.configure(state="normal" if web else "disabled")
+        if web:
+            self.show_check.pack(anchor="w", padx=16, pady=(12, 0), before=self.sep)
+        else:
+            self.show_check.pack_forget()
+        if not initial:
+            self._refresh_setup()
+            self._refresh()
+
+    def _template(self, _event=None):
+        name = self.tpl_var.get()
+        self.tpl_var.set("")
+        for tname, desc, steps in rt.get_templates()[self.kind]:
+            if tname == name:
+                if self.steps and not messagebox.askyesno("Replace steps", "Replace the current steps with this "
+                                                                           "template?", parent=self):
+                    return
+                self.steps = copy.deepcopy(steps)
+                self.tpl_note.configure(text=desc)
+                self._refresh(select=0)
+                return
+
+    def _record(self):
+        if self._rec_proc:
+            self._rec_proc.terminate()
+            return
+        if self._busy:
+            return
+        if not rt.automation_python():
+            messagebox.showinfo("Set up first", "Click \"Set up browser automation\" first (one time).", parent=self)
+            return
+        url = simpledialog.askstring("Record", "Which web address should the recording start on?",
+                                     initialvalue="https://", parent=self)
+        if not url or not url.lower().startswith(("http://", "https://")):
+            return
+        env = os.environ.copy()
+        if self.profile_dir:
+            os.makedirs(self.profile_dir, mode=0o700, exist_ok=True)
+            env["COMMAND_VAULT_BROWSER_PROFILE"] = self.profile_dir
+        try:
+            self._rec_proc = subprocess.Popen([rt.automation_python(), "-u", rt.recorder_script_path(), url],
+                                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
+        except OSError as e:
+            messagebox.showerror("Couldn't record", str(e), parent=self)
+            return
+        self._set_busy(True)
+        self.record_btn.configure(text="\u25A0 Stop recording", state="normal")
+        self._say("Recording: do your routine in the browser that opened, then close it (or press Stop). "
+                  "Password boxes are not recorded; log in once by hand instead.")
+        proc = self._rec_proc
+
+        def work():
+            items = []
+            for line in proc.stdout:
+                line = line.strip()
+                try:
+                    item = json.loads(line)
+                except ValueError:
+                    if line:
+                        self._say_threadsafe(line)
+                    continue
+                items.append(item)
+                self._say_threadsafe("  + " + rt.describe_step(rt.recorded_to_steps([item])[0])
+                                     if rt.recorded_to_steps([item]) else "")
+            proc.wait()
+            try:
+                self.after(0, self._record_done, items)
+            except tk.TclError:
+                pass
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _record_done(self, items):
+        self._rec_proc = None
+        self._set_busy(False)
+        self.record_btn.configure(text="\u25CF Record")
+        new_steps = rt.recorded_to_steps(items)
+        if not new_steps:
+            self._say("Nothing was recorded.")
+            return
+        sel = self._selected()
+        at = sel + 1 if sel is not None else len(self.steps)
+        self.steps[at:at] = new_steps
+        self._refresh(select=at)
+        self._say(f"Added {len(new_steps)} step(s). Check them, then use Test run.")
+        if any(st.get("note") == "password" for st in new_steps):
+            self._say("A password box was skipped: log in once with Test run and the browser remembers you.")
+
+    def _close(self):
+        if self._rec_proc:
+            self._rec_proc.terminate()
+        self.destroy()
 
     # -- list handling ------------------------------------------------------
     def _refresh(self, select=None):
@@ -228,7 +370,7 @@ class RoutineDialog(tk.Toplevel):
     def _add(self, _event=None):
         label = self.add_var.get()
         self.add_var.set("")
-        step_type = next((k for k, v in rt.STEP_TYPES.items() if v["label"] == label), None)
+        step_type = next((k for k, v in self._types().items() if v["label"] == label), None)
         if not step_type:
             return
         dialog = StepDialog(self, rt.new_step(step_type))
@@ -268,15 +410,15 @@ class RoutineDialog(tk.Toplevel):
             del self.steps[i]
             self._refresh(select=i)
 
-    def _example(self):
-        if self.steps and not messagebox.askyesno("Replace steps", "Replace the current steps with the example?",
-                                                  parent=self):
-            return
-        self.steps = copy.deepcopy(rt.EXAMPLE_STEPS)
-        self._refresh(select=0)
-
     # -- setup + test run ---------------------------------------------------
     def _refresh_setup(self):
+        if self.kind_var.get() == "app":
+            self.setup_var.set("Needs the 'xdotool' program (Fedora: sudo dnf install xdotool; Ubuntu/Pop!_OS: "
+                               "sudo apt install xdotool) and a normal X11 desktop session. Windows, macOS and "
+                               "pure Wayland programs aren't supported yet.")
+            self.setup_btn.pack_forget()
+            return
+        self.setup_btn.pack(side="left", before=self.test_btn)
         if rt.automation_python():
             self.setup_var.set("Browser automation is set up on this computer.")
             self.setup_btn.configure(text="Reinstall / update")
@@ -327,13 +469,14 @@ class RoutineDialog(tk.Toplevel):
         if error:
             messagebox.showwarning("Check the steps", error, parent=self)
             return
-        if not rt.automation_python():
+        web = self.kind == "web"
+        if web and not rt.automation_python():
             messagebox.showinfo("Set up first", "Click \"Set up browser automation\" first (one time).", parent=self)
             return
-        routine = {"steps": self.steps, "show_browser": True}
+        routine = {"steps": self.steps, "show_browser": True, "kind": self.kind}
         path = rt.write_script(self.entry_id + "-test", self.name, routine)
         self._set_busy(True)
-        self._say("--- Test run (a browser window opens) ---")
+        self._say("--- Test run ---")
 
         def work():
             try:
@@ -341,7 +484,7 @@ class RoutineDialog(tk.Toplevel):
                 if self.profile_dir:
                     os.makedirs(self.profile_dir, mode=0o700, exist_ok=True)
                     env["COMMAND_VAULT_BROWSER_PROFILE"] = self.profile_dir
-                proc = subprocess.Popen([rt.automation_python(), "-u", path], stdout=subprocess.PIPE,
+                proc = subprocess.Popen([rt.automation_python() or "python3", "-u", path], stdout=subprocess.PIPE,
                                         stderr=subprocess.STDOUT, text=True, env=env)
                 for line in proc.stdout:
                     self._say_threadsafe(line)
@@ -359,5 +502,5 @@ class RoutineDialog(tk.Toplevel):
         if error:
             messagebox.showwarning("Check the steps", error, parent=self)
             return
-        self.result = {"steps": self.steps, "show_browser": bool(self.show_var.get())}
+        self.result = {"steps": self.steps, "show_browser": bool(self.show_var.get()), "kind": self.kind}
         self.destroy()

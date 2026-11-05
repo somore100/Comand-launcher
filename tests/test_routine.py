@@ -108,3 +108,60 @@ def test_script_embeds_name_safely_and_steps_roundtrip(tmp_path):
 def test_routine_command_quotes_paths():
     cmd = rt.routine_command("abc")
     assert cmd.startswith('"') and cmd.endswith('abc.py"')
+
+
+def test_all_templates_are_valid_and_generate_compilable_scripts():
+    for kind, items in rt.get_templates().items():
+        assert items
+        for name, desc, steps in items:
+            assert rt.validate_steps(steps) == "", name
+            compile(rt.generate_script("id", name, {"kind": kind, "steps": steps}), name, "exec")
+
+
+def test_recorded_steps_conversion():
+    items = [{"type": "goto", "url": "https://a.test"},
+             {"type": "click", "target": "Login", "by": "text"},
+             {"type": "click", "target": "Login", "by": "text"},
+             {"type": "fill", "target": "Email", "by": "text", "value": "x@y.z"},
+             {"type": "fill", "target": "Password", "by": "text", "value": "", "note": "password"},
+             {"type": "press", "key": "Enter"},
+             {"type": "bogus"}]
+    steps = rt.recorded_to_steps(items)
+    assert [s["type"] for s in steps] == ["goto", "click", "fill", "fill", "press"]
+    assert steps[3]["note"] == "password"
+    assert rt.validate_steps(steps) == ""
+
+
+def test_recorder_script_compiles():
+    compile(rt._RECORDER, "recorder", "exec")
+
+
+def _load_app(tmp_path, steps):
+    src = rt.generate_script("abc", "app", {"kind": "app", "steps": steps})
+    path = tmp_path / "app.py"
+    path.write_text(src)
+    spec = importlib.util.spec_from_file_location("appgen", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_app_script_alt_window_and_failure(tmp_path):
+    mod = _load_app(tmp_path, [{"type": "focus_window", "target": "Nope", "alt": "Yes"}])
+    calls = []
+    mod.find_window = lambda t: "42" if t == "Yes" else None
+    mod.xdo = lambda *a: calls.append(a) or types.SimpleNamespace(returncode=0, stderr="", stdout="")
+    assert mod.run_step(mod.STEPS[0])[0] is True
+    assert calls == [("windowactivate", "--sync", "42")]
+    mod.find_window = lambda t: None
+    mod.time = types.SimpleNamespace(sleep=lambda s: None, time=lambda: 0)
+    ok, err = mod.run_step(mod.STEPS[0])
+    assert not ok and "no window" in str(err)
+
+
+def test_app_script_keys_uses_xdotool(tmp_path):
+    mod = _load_app(tmp_path, [{"type": "keys", "keys": "ctrl+shift+t"}])
+    seen = []
+    mod.xdo = lambda *a: seen.append(a) or types.SimpleNamespace(returncode=0, stderr="", stdout="")
+    assert mod.run_step(mod.STEPS[0])[0] is True
+    assert seen == [("key", "--clearmodifiers", "ctrl+shift+t")]

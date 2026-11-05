@@ -95,3 +95,36 @@ def fit_dialog(dialog, parent=None, max_height_fraction=0.92):
     y = max(0, min(py, screen_h - height - 40))
     dialog.geometry(f"{width}x{height}+{x}+{y}")
     dialog.minsize(min(width, 360), min(height, 240))
+
+
+class CollapsibleSection(tk.Frame):
+    """A header row (arrow, title, one-line summary) that expands/collapses a
+    `.content` frame. Keeps long dialogs short: collapsed sections still show
+    their current state through the summary."""
+
+    def __init__(self, master, title, summary="", expanded=False, bg=COLOR_BG, fg="#e6e6e6", sub="#8a8a8a"):
+        super().__init__(master, bg=bg)
+        self._expanded = False
+        header = tk.Frame(self, bg=bg, cursor="hand2")
+        header.pack(fill="x")
+        self._arrow = tk.Label(header, text="▸", bg=bg, fg=sub, width=2)
+        self._arrow.pack(side="left")
+        tk.Label(header, text=title, bg=bg, fg=fg, font=("Segoe UI", 9, "bold")).pack(side="left")
+        self._summary = tk.StringVar(value=summary)
+        tk.Label(header, textvariable=self._summary, bg=bg, fg=sub, font=("Segoe UI", 8)).pack(side="left", padx=(10, 0))
+        self.content = tk.Frame(self, bg=bg)
+        for w in [header] + list(header.winfo_children()):
+            w.bind("<Button-1>", lambda e: self.toggle())
+        if expanded:
+            self.toggle()
+
+    def set_summary(self, text):
+        self._summary.set(text)
+
+    def toggle(self):
+        self._expanded = not self._expanded
+        self._arrow.configure(text="▾" if self._expanded else "▸")
+        if self._expanded:
+            self.content.pack(fill="x", padx=(22, 0), pady=(4, 6))
+        else:
+            self.content.pack_forget()

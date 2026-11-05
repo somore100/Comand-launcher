@@ -7,6 +7,9 @@ Ordered work list. Update as items ship.
 - 1.7.0 released (AppImage, exe, macOS dmg)
 - Optional administrator rights for `sudo` entries on Linux/macOS (off / ask / remember via exact sudoers rule)
 
+## Built, waiting for your testing (batch 2)
+- Collapsible sections in Edit Entry; routine editor (website + Linux desktop program), recorder, templates; Windows admin rights; Leave Feedback; builds (.deb/.rpm/Arch, Node 24 actions).
+
 ## Next
 1. **Builds** (commit the pending `build.yml`): .deb / .rpm / Arch packages, Intel macOS on `macos-15-intel`, bump actions off Node 20. Check packages on a real Fedora.
 2. **Windows admin rights**: "ask" = elevated launch (UAC); "remember" = Task Scheduler task with highest privileges, created once with one UAC approval.

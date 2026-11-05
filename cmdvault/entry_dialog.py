@@ -17,8 +17,8 @@ from .placeholders import extract_placeholders
 from .platform_utils import is_linux, is_windows
 from . import routine as rt
 from .routine_dialog import RoutineDialog
-from .privilege import ADMIN_ASK, ADMIN_OFF, ADMIN_REMEMBER, plan_admin, supports_admin
-from .scrollframe import ScrollableBody, fit_dialog
+from .privilege import ADMIN_ASK, ADMIN_OFF, ADMIN_REMEMBER, admin_choice_labels, plan_admin, supports_admin
+from .scrollframe import CollapsibleSection, ScrollableBody, fit_dialog
 from .scheduling import SCHEDULE_WEEKDAYS
 from .theme import COLOR_ACCENT, COLOR_ACCENT_DIM, COLOR_BG, COLOR_PANEL, COLOR_RED, COLOR_SELECT, COLOR_SIDEBAR, COLOR_SUBTEXT, COLOR_TEXT, DEFAULT_ICON, EMOJI_CHOICES, FONT_HEADING, FONT_MONO, FONT_NORMAL, FONT_SMALL, SCHEDULE_TIME_RE, UNCATEGORIZED
 
@@ -234,7 +234,7 @@ class EntryDialog(tk.Toplevel):
                         bg=COLOR_BG, fg=COLOR_TEXT, selectcolor=COLOR_PANEL, activebackground=COLOR_BG,
                         activeforeground=COLOR_TEXT, font=FONT_SMALL, command=self._sync_command_widget
                         ).pack(side="left", padx=(12, 0))
-        tk.Radiobutton(type_frame, text="Web routine (no code)", variable=self.type_var, value="routine",
+        tk.Radiobutton(type_frame, text="Routine (no code)", variable=self.type_var, value="routine",
                         bg=COLOR_BG, fg=COLOR_TEXT, selectcolor=COLOR_PANEL, activebackground=COLOR_BG,
                         activeforeground=COLOR_TEXT, font=FONT_SMALL, command=self._sync_command_widget
                         ).pack(side="left", padx=(12, 0))
@@ -288,7 +288,7 @@ class EntryDialog(tk.Toplevel):
         tk.Button(self.routine_frame, text="Edit steps...", command=self._edit_routine, bg=COLOR_ACCENT_DIM,
                   fg=COLOR_TEXT, relief="flat", font=FONT_NORMAL, padx=12, pady=4).pack(anchor="w", pady=(6, 0))
         tk.Label(self.routine_frame,
-                 text="Build a list of steps for a website (open a page, click, type, wait) with simple forms. "
+                 text="Build a list of steps for a website or a desktop program (open, click, type, wait, press keys) with simple forms, or record them. "
                       "Command Vault turns it into a script and runs it like any entry, including on a schedule "
                       "or at startup. Each step can have a fallback if something isn't found.",
                  bg=COLOR_BG, fg=COLOR_SUBTEXT, font=("Segoe UI", 8), wraplength=420, justify="left"
@@ -329,8 +329,10 @@ class EntryDialog(tk.Toplevel):
         self.autostart_var = tk.BooleanVar(
             value=entry_autostart_enabled(entry["id"]) if entry else False
         )
-        autostart_frame = tk.Frame(body, bg=COLOR_BG)
-        autostart_frame.grid(row=14, column=0, columnspan=2, sticky="w", padx=16, pady=(4, 10))
+        sec_start = CollapsibleSection(body, "Startup", "On" if self.autostart_var.get() else "Off")
+        sec_start.grid(row=14, column=0, columnspan=2, sticky="we", padx=16, pady=(6, 0))
+        self.autostart_var.trace_add("write", lambda *_: sec_start.set_summary("On" if self.autostart_var.get() else "Off"))
+        autostart_frame = sec_start.content
         tk.Checkbutton(autostart_frame, text="Run this automatically when the computer starts",
                         variable=self.autostart_var, bg=COLOR_BG, fg=COLOR_TEXT, selectcolor=COLOR_PANEL,
                         activebackground=COLOR_BG, activeforeground=COLOR_TEXT, font=FONT_SMALL
@@ -350,8 +352,19 @@ class EntryDialog(tk.Toplevel):
         existing_days = set(entry.get("schedule_days") or []) if entry else set()
         self.schedule_day_vars = {d: tk.BooleanVar(value=(d in existing_days)) for d in SCHEDULE_WEEKDAYS}
 
-        schedule_frame = tk.Frame(body, bg=COLOR_BG)
-        schedule_frame.grid(row=15, column=0, columnspan=2, sticky="w", padx=16, pady=(4, 10))
+        sec_sched = CollapsibleSection(body, "Schedule", "")
+        sec_sched.grid(row=15, column=0, columnspan=2, sticky="we", padx=16, pady=(6, 0))
+
+        def _sched_summary(*_):
+            if not self.schedule_enabled_var.get():
+                sec_sched.set_summary("Off")
+                return
+            days = [d for d in SCHEDULE_WEEKDAYS if self.schedule_day_vars[d].get()]
+            sec_sched.set_summary(f"{self.schedule_time_var.get()}, " + (", ".join(days) if days else "every day"))
+        for v in [self.schedule_enabled_var, self.schedule_time_var, *self.schedule_day_vars.values()]:
+            v.trace_add("write", _sched_summary)
+        _sched_summary()
+        schedule_frame = sec_sched.content
         tk.Checkbutton(schedule_frame, text="Run on a schedule", variable=self.schedule_enabled_var,
                         bg=COLOR_BG, fg=COLOR_TEXT, selectcolor=COLOR_PANEL, activebackground=COLOR_BG,
                         activeforeground=COLOR_TEXT, font=FONT_SMALL).pack(anchor="w")
@@ -383,9 +396,18 @@ class EntryDialog(tk.Toplevel):
         self.browser_profile_dir_var = tk.StringVar(
             value=entry.get("browser_profile_dir", "") if entry else ""
         )
-        bp_frame = tk.Frame(body, bg=COLOR_BG)
-        bp_frame.grid(row=16, column=0, columnspan=2, sticky="w", padx=16, pady=(4, 10))
-        tk.Checkbutton(bp_frame, text="Persistent browser profile (for browser-automation bots)",
+        sec_bp = CollapsibleSection(body, "Stay logged in (browser profile)", "")
+        sec_bp.grid(row=16, column=0, columnspan=2, sticky="we", padx=16, pady=(6, 0))
+        self.browser_profile_var.trace_add("write", lambda *_: sec_bp.set_summary(
+            "On" if self.browser_profile_var.get() else "Off"))
+        sec_bp.set_summary("On" if self.browser_profile_var.get() else "Off")
+        bp_frame = sec_bp.content
+        tk.Label(bp_frame, text="A browser profile is a private folder where a bot's browser keeps its cookies "
+                                "and logins, like a separate user in Chrome. Turn this on so a bot or web routine "
+                                "stays logged in between runs instead of logging in every time.",
+                 bg=COLOR_BG, fg=COLOR_SUBTEXT, font=("Segoe UI", 8), wraplength=380, justify="left"
+                 ).pack(anchor="w", pady=(0, 4))
+        tk.Checkbutton(bp_frame, text="Keep the bot logged in between runs",
                         variable=self.browser_profile_var, bg=COLOR_BG, fg=COLOR_TEXT, selectcolor=COLOR_PANEL,
                         activebackground=COLOR_BG, activeforeground=COLOR_TEXT, font=FONT_SMALL
                         ).pack(anchor="w")
@@ -409,20 +431,24 @@ class EntryDialog(tk.Toplevel):
         # Administrator rights (sudo) -- Linux/macOS only
         self.admin_var = tk.StringVar(value=entry.get("admin_mode", ADMIN_OFF) if entry else ADMIN_OFF)
         if supports_admin():
-            admin_frame = tk.Frame(body, bg=COLOR_BG)
-            admin_frame.grid(row=17, column=0, columnspan=2, sticky="w", padx=16, pady=(0, 10))
-            tk.Label(admin_frame, text="Administrator rights (for commands using sudo)", bg=COLOR_BG,
-                     fg=COLOR_SUBTEXT, font=FONT_SMALL, anchor="w").pack(anchor="w")
-            for value, text in ((ADMIN_OFF, "Off \u2014 leave sudo as written"),
-                                (ADMIN_ASK, "Ask for the password each run"),
-                                (ADMIN_REMEMBER, "Don't ask \u2014 allow these exact sudo commands (set up once)")):
+            sec_admin = CollapsibleSection(body, "Administrator rights", "")
+            sec_admin.grid(row=17, column=0, columnspan=2, sticky="we", padx=16, pady=(6, 0))
+            names = {ADMIN_OFF: "Off", ADMIN_ASK: "Ask each run", ADMIN_REMEMBER: "Approved once"}
+            self.admin_var.trace_add("write", lambda *_: sec_admin.set_summary(names.get(self.admin_var.get(), "")))
+            sec_admin.set_summary(names.get(self.admin_var.get(), ""))
+            admin_frame = sec_admin.content
+            for value, text in admin_choice_labels():
                 tk.Radiobutton(admin_frame, text=text, value=value, variable=self.admin_var, bg=COLOR_BG,
                                fg=COLOR_TEXT, selectcolor=COLOR_PANEL, activebackground=COLOR_BG,
                                activeforeground=COLOR_TEXT, font=FONT_SMALL).pack(anchor="w")
             tk.Label(admin_frame,
-                     text="\"Don't ask\" installs a rule through your system's own password prompt when you "
-                          "save: only the exact sudo commands written in this entry (or its script) run without "
-                          "a password. Nothing is stored. Scheduled and boot runs need this option.",
+                     text=("\"Don't ask\" asks Windows for permission once when you save; after that this exact "
+                           "command runs elevated without a prompt (its window is separate and its output isn't "
+                           "captured). Nothing is stored. Scheduled and boot runs need this option."
+                           if is_windows() else
+                           "\"Don't ask\" installs a rule through your system's own password prompt when you "
+                           "save: only the exact sudo commands written in this entry (or its script) run without "
+                           "a password. Nothing is stored. Scheduled and boot runs need this option."),
                      bg=COLOR_BG, fg=COLOR_SUBTEXT, font=("Segoe UI", 8), wraplength=380, justify="left"
                      ).pack(anchor="w", pady=(4, 0))
 
@@ -432,10 +458,12 @@ class EntryDialog(tk.Toplevel):
             value=(entry.get("hotkey_display") or "Not set") if entry else "Not set"
         )
         if HAVE_PYNPUT:
-            hotkey_frame = tk.Frame(body, bg=COLOR_BG)
-            hotkey_frame.grid(row=18, column=0, columnspan=2, sticky="w", padx=16, pady=(0, 10))
-            tk.Label(hotkey_frame, text="Launch Shortcut (optional)", bg=COLOR_BG, fg=COLOR_SUBTEXT,
-                     font=FONT_SMALL, anchor="w").pack(anchor="w")
+            sec_hk = CollapsibleSection(body, "Launch shortcut", "")
+            sec_hk.grid(row=18, column=0, columnspan=2, sticky="we", padx=16, pady=(6, 10))
+            self.entry_hotkey_display_var.trace_add("write", lambda *_: sec_hk.set_summary(
+                self.entry_hotkey_display_var.get() if self.entry_hotkey_pynput else "Not set"))
+            sec_hk.set_summary(self.entry_hotkey_display_var.get() if self.entry_hotkey_pynput else "Not set")
+            hotkey_frame = sec_hk.content
             row = tk.Frame(hotkey_frame, bg=COLOR_BG)
             row.pack(anchor="w", pady=(2, 0))
             tk.Label(row, textvariable=self.entry_hotkey_display_var, bg=COLOR_PANEL, fg=COLOR_ACCENT,
@@ -656,7 +684,7 @@ class EntryDialog(tk.Toplevel):
             "schedule_enabled": schedule_enabled,
             "schedule_days": schedule_days,
             "schedule_time": schedule_time,
-            "browser_profile": bool(self.browser_profile_var.get()) or is_routine,
+            "browser_profile": bool(self.browser_profile_var.get()) or (is_routine and self.routine.get("kind", "web") == "web"),
             "routine": self.routine if is_routine else {},
             "browser_profile_dir": self.browser_profile_dir_var.get().strip(),
             "admin_mode": admin_mode,

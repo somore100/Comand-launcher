@@ -127,3 +127,14 @@ def test_normalize_adds_admin_defaults():
     data = cv_data._normalize_vault_data({"categories": [], "commands": [{"name": "a", "command": "b"}]})
     entry = data["commands"][0]
     assert entry["admin_mode"] == "off" and entry["admin_rule_hash"] == ""
+
+
+def test_windows_plan_and_apply(monkeypatch):
+    monkeypatch.setattr(cv_priv, "is_windows", lambda: True)
+    plan = cv_priv.plan_admin({"id": "e1", "command": "echo hi", "working_dir": "C:\\x"})
+    assert plan["problems"] == [] and "cd /d" in plan["text"] and "echo hi" in plan["text"]
+    assert cv_priv.plan_admin({"id": "e1", "command": "echo {{x}}"})["problems"]
+    entry = {"id": "e1", "admin_mode": "remember"}
+    assert cv_priv.apply_admin(entry, "echo hi") == 'schtasks /run /tn "CommandVault-Admin-e1"'
+    assert cv_priv.apply_admin({"id": "e1", "admin_mode": "off"}, "echo hi") == "echo hi"
+    assert cv_priv.apply_admin({"id": "e1", "admin_mode": "ask"}, "echo hi", unattended=True) == "echo hi"

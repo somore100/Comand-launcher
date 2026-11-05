@@ -22,7 +22,7 @@ from .platform_utils import is_windows
 
 # What each step type needs. Drives the editor form, validation and the text
 # shown in the step list. field kinds: text | choice | number
-STEP_TYPES = {
+WEB_STEP_TYPES = {
     "goto": {
         "label": "Open a web page",
         "fields": [("url", "Web address", "text", "https://example.com")],
@@ -31,14 +31,14 @@ STEP_TYPES = {
     "click": {
         "label": "Click a button or link",
         "fields": [("target", "Its text (or selector)", "text", "Start")],
-        "uses_by": True,
+        "uses_by": True, "uses_alt": True,
         "describe": "Click “{target}”",
     },
     "fill": {
         "label": "Type into a box",
         "fields": [("target", "Box label / placeholder (or selector)", "text", "Email"),
                    ("value", "Text to type", "text", "")],
-        "uses_by": True,
+        "uses_by": True, "uses_alt": True,
         "describe": "Type “{value}” into “{target}”",
     },
     "press": {
@@ -58,6 +58,41 @@ STEP_TYPES = {
     },
 }
 
+# Steps for desktop programs (Linux/X11, via xdotool)
+APP_STEP_TYPES = {
+    "launch": {
+        "label": "Start a program",
+        "fields": [("command", "Program or command", "text", "firefox")],
+        "describe": "Start {command}",
+    },
+    "wait_window": {
+        "label": "Wait for a window to appear",
+        "fields": [("target", "Window title contains", "text", "Firefox")],
+        "uses_alt": True,
+        "describe": "Wait for a window titled \u201c{target}\u201d",
+    },
+    "focus_window": {
+        "label": "Bring a window to the front",
+        "fields": [("target", "Window title contains", "text", "Firefox")],
+        "uses_alt": True,
+        "describe": "Focus the window \u201c{target}\u201d",
+    },
+    "keys": {
+        "label": "Press keys",
+        "fields": [("keys", "Keys (e.g. ctrl+shift+t, Return)", "text", "ctrl+t")],
+        "describe": "Press {keys}",
+    },
+    "type": {
+        "label": "Type text",
+        "fields": [("text", "Text to type", "text", "")],
+        "describe": "Type \u201c{text}\u201d",
+    },
+    "wait": WEB_STEP_TYPES["wait"],
+}
+
+STEP_TYPES = {**WEB_STEP_TYPES, **APP_STEP_TYPES}
+KINDS = {"web": ("A website", WEB_STEP_TYPES), "app": ("A desktop program (Linux)", APP_STEP_TYPES)}
+
 ON_FAIL_CHOICES = {
     "stop": "Stop and report the problem",
     "skip": "Skip it and carry on",
@@ -73,10 +108,57 @@ EXAMPLE_STEPS = [
 ]
 
 
+def _s(step_type, **kw):
+    step = new_step(step_type)
+    step.update(kw)
+    return step
+
+
+# Ready-made starting points: kind -> [(name, what it does, steps)]
+def get_templates():
+    return {
+    "web": [
+        ("Open a page and click a button",
+         "Loads a page and clicks a button or link by its text. Change the address and the button text.",
+         [_s("goto", url="https://example.com"),
+          _s("click", target="More information", on_fail="retry")]),
+        ("Start a game server (Aternos style)",
+         "Opens the server page, clicks Start, accepts a possible confirmation, and waits until it says Online. "
+         "Log in once with Test run first. Check the site's rules allow automation.",
+         [_s("goto", url="https://aternos.org/servers/"),
+          _s("click", target="Start", alt="Start server", on_fail="retry", retries=3),
+          _s("click", target="Confirm", alt="Yes", on_fail="skip", timeout=20),
+          _s("wait_text", text="Online", timeout=300)]),
+        ("Log in with saved session, then click",
+         "Opens a site that you logged in to once (Test run), waits for a word that only shows when logged in, "
+         "then clicks a button.",
+         [_s("goto", url="https://example.com/dashboard"),
+          _s("wait_text", text="Welcome"),
+          _s("click", target="Check in", on_fail="retry")]),
+    ],
+    "app": [
+        ("Open Firefox",
+         "Starts Firefox and brings it to the front. To get your last tabs back every time, turn on Firefox "
+         "Settings > General > Startup > \"Open previous windows and tabs\".",
+         [_s("launch", command="firefox"),
+          _s("wait_window", target="Firefox", alt="Mozilla", timeout=30),
+          _s("focus_window", target="Firefox", alt="Mozilla", on_fail="skip")]),
+        ("Open a program and press keys",
+         "Starts a program, waits for its window, then presses a shortcut. Change the program and the keys.",
+         [_s("launch", command="gedit"),
+          _s("wait_window", target="gedit", timeout=20),
+          _s("focus_window", target="gedit"),
+          _s("keys", keys="ctrl+n")]),
+    ],
+}
+
+
 def new_step(step_type):
     step = {"type": step_type, "on_fail": "stop", "retries": 2, "timeout": 15}
     if STEP_TYPES[step_type].get("uses_by"):
         step["by"] = "text"
+    if STEP_TYPES[step_type].get("uses_alt"):
+        step["alt"] = ""
     for key, _label, kind, default in STEP_TYPES[step_type]["fields"]:
         step[key] = default if kind != "number" else float(default or 0)
     return step
@@ -255,6 +337,194 @@ if __name__ == "__main__":
 '''
 
 
+_APP_SCRIPT = r'''#!/usr/bin/env python3
+"""Generated by Command Vault from the routine "__NAME__".
+Change the steps in Command Vault (Edit entry -> Edit steps); edits here are overwritten."""
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+
+STEPS = json.loads(__STEPS__)
+
+
+def xdo(*args):
+    return subprocess.run(["xdotool"] + list(args), capture_output=True, text=True)
+
+
+def find_window(title):
+    ids = xdo("search", "--onlyvisible", "--name", title).stdout.split()
+    return ids[-1] if ids else None
+
+
+def do_step(step, target):
+    kind = step["type"]
+    limit = float(step.get("timeout", 15))
+    if kind == "launch":
+        subprocess.Popen(step["command"], shell=True, start_new_session=True,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    elif kind == "wait_window":
+        end = time.time() + limit
+        while time.time() < end:
+            if find_window(target):
+                return
+            time.sleep(0.5)
+        raise RuntimeError("no window with '%s' in its title appeared in %ds" % (target, limit))
+    elif kind == "focus_window":
+        wid = find_window(target)
+        if not wid:
+            raise RuntimeError("no window with '%s' in its title" % target)
+        res = xdo("windowactivate", "--sync", wid)
+        if res.returncode != 0:
+            raise RuntimeError("couldn't focus the window: " + (res.stderr.strip() or "unknown error"))
+    elif kind == "keys":
+        res = xdo("key", "--clearmodifiers", *step["keys"].split())
+        if res.returncode != 0:
+            raise RuntimeError("couldn't press the keys: " + (res.stderr.strip() or "unknown error"))
+    elif kind == "type":
+        res = xdo("type", "--clearmodifiers", "--delay", "40", step.get("text", ""))
+        if res.returncode != 0:
+            raise RuntimeError("couldn't type: " + (res.stderr.strip() or "unknown error"))
+    elif kind == "wait":
+        time.sleep(float(step.get("seconds", 1)))
+    else:
+        raise ValueError("unknown step type " + str(kind))
+
+
+def run_step(step):
+    targets = [step.get("target")]
+    if step.get("alt"):
+        targets.append(step["alt"])
+    rounds = 1 + (int(step.get("retries", 2)) if step.get("on_fail") == "retry" else 0)
+    error = None
+    for n in range(rounds):
+        for target in targets:
+            try:
+                do_step(step, target)
+                return True, None
+            except Exception as exc:  # noqa: BLE001
+                error = exc
+        if n < rounds - 1:
+            time.sleep(2)
+    return False, error
+
+
+def main():
+    if not shutil.which("xdotool"):
+        print("This routine needs 'xdotool'. Install it (Fedora: sudo dnf install xdotool, Ubuntu/Pop!_OS: sudo apt install xdotool).")
+        return 2
+    if not os.environ.get("DISPLAY"):
+        print("No graphical session found (DISPLAY is empty), so there is nothing to click or type into. "
+              "Run this when you are logged in, e.g. at startup rather than from a background schedule.")
+        return 3
+    total = len(STEPS)
+    for i, step in enumerate(STEPS, 1):
+        print("[%d/%d] %s" % (i, total, step.get("desc", step["type"])), flush=True)
+        ok, error = run_step(step)
+        if ok:
+            continue
+        first_line = str(error).strip().splitlines()[0] if str(error).strip() else type(error).__name__
+        if step.get("on_fail") == "skip":
+            print("    skipped: " + first_line, flush=True)
+            continue
+        print("FAILED at step %d: %s" % (i, step.get("desc", step["type"])))
+        print("    " + first_line)
+        return 1
+    print("Routine finished.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+'''
+
+_RECORDER = r'''#!/usr/bin/env python3
+# Command Vault recorder: opens a browser, prints one JSON step per line for
+# what you click/type. Close the browser window to stop.
+import json
+import os
+import sys
+import time
+from playwright.sync_api import sync_playwright
+
+JS = r"""
+(() => {
+  if (window.__cvRec) return; window.__cvRec = true;
+  const rec = (o) => { try { window.cvRecord(JSON.stringify(o)); } catch (e) {} };
+  const clean = (t) => (t || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+  const cssPath = (el) => {
+    if (el.id) return '#' + CSS.escape(el.id);
+    const parts = [];
+    while (el && el.nodeType === 1 && parts.length < 4) {
+      let part = el.tagName.toLowerCase();
+      const same = el.parentElement ? Array.from(el.parentElement.children).filter(c => c.tagName === el.tagName) : [];
+      if (same.length > 1) part += ':nth-of-type(' + (same.indexOf(el) + 1) + ')';
+      parts.unshift(part); el = el.parentElement;
+    }
+    return parts.join(' > ');
+  };
+  const fieldStep = (el) => {
+    const label = clean((el.labels && el.labels[0] && el.labels[0].innerText) || el.getAttribute('placeholder') || el.getAttribute('aria-label'));
+    return label ? {target: label, by: 'text'} : {target: cssPath(el), by: 'selector'};
+  };
+  const flush = (el) => {
+    if (!/^(INPUT|TEXTAREA)$/.test(el.tagName)) return;
+    if (['checkbox', 'radio', 'submit', 'button', 'file'].includes(el.type)) return;
+    if (el.__cvLast === el.value) return;
+    el.__cvLast = el.value;
+    const step = Object.assign({type: 'fill', value: el.type === 'password' ? '' : el.value}, fieldStep(el));
+    if (el.type === 'password') step.note = 'password';
+    rec(step);
+  };
+  document.addEventListener('click', e => {
+    const el = e.target.closest('button,a,[role=button],input[type=submit],input[type=button],label') || e.target;
+    if (/^(INPUT|TEXTAREA)$/.test(el.tagName) && !['submit', 'button'].includes(el.type)) return;
+    const t = clean(el.innerText || el.value || el.getAttribute('aria-label') || el.title);
+    rec(t ? {type: 'click', target: t, by: 'text'} : {type: 'click', target: cssPath(el), by: 'selector'});
+  }, true);
+  document.addEventListener('change', e => flush(e.target), true);
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && /^(INPUT|TEXTAREA)$/.test(e.target.tagName)) { flush(e.target); rec({type: 'press', key: 'Enter'}); }
+  }, true);
+})();
+"""
+
+
+def emit(obj):
+    print(json.dumps(obj), flush=True)
+
+
+def main():
+    profile = os.environ.get("COMMAND_VAULT_BROWSER_PROFILE")
+    start = sys.argv[1] if len(sys.argv) > 1 else ""
+    with sync_playwright() as pw:
+        ctx = (pw.chromium.launch_persistent_context(profile, headless=False) if profile
+               else pw.chromium.launch(headless=False).new_context())
+        closed = []
+        ctx.on("close", lambda *_: closed.append(1))
+        ctx.expose_binding("cvRecord", lambda source, payload: emit(json.loads(payload)))
+        ctx.add_init_script(JS)
+        page = ctx.pages[0] if ctx.pages else ctx.new_page()
+        if start:
+            emit({"type": "goto", "url": start})
+            page.goto(start)
+        while not closed:
+            try:
+                page.wait_for_timeout(300)
+            except Exception:
+                time.sleep(0.3)
+                if not ctx.pages:
+                    break
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+'''
+
+
 def routines_dir():
     d = os.path.join(app_config_dir(), "routines")
     os.makedirs(d, exist_ok=True)
@@ -277,6 +547,8 @@ def generate_script(entry_id, name, routine):
         s["desc"] = describe_step(step)
         steps.append(s)
     safe_name = name.replace('"', "'").replace("\\", "/").replace("\n", " ")
+    if routine.get("kind", "web") == "app":
+        return _APP_SCRIPT.replace("__NAME__", safe_name).replace("__STEPS__", repr(json.dumps(steps)))
     return (_SCRIPT
             .replace("__NAME__", safe_name)
             .replace("__STEPS__", repr(json.dumps(steps)))
@@ -290,6 +562,33 @@ def write_script(entry_id, name, routine):
         f.write(generate_script(entry_id, name, routine))
     os.chmod(path, 0o700)
     return path
+
+
+def recorder_script_path():
+    path = os.path.join(routines_dir(), "recorder.py")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(_RECORDER)
+    return path
+
+
+def recorded_to_steps(items):
+    """Turns recorder output (dicts) into routine steps: drops repeated clicks
+    on the same thing and fills in default fields."""
+    steps = []
+    for item in items:
+        kind = item.get("type")
+        if kind not in WEB_STEP_TYPES:
+            continue
+        step = new_step(kind)
+        for key in ("url", "target", "value", "key", "by"):
+            if key in item:
+                step[key] = item[key]
+        if item.get("note"):
+            step["note"] = item["note"]
+        if kind == "click" and steps and steps[-1].get("type") == "click" and steps[-1].get("target") == step.get("target"):
+            continue
+        steps.append(step)
+    return steps
 
 
 def routine_command(entry_id):
