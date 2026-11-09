@@ -1,10 +1,12 @@
 """autostart -- split out of the former monolithic main.py."""
 import os
+import plistlib
+import re
 import sys
 from .browser import browser_env_line
 from .execution import program_command, resolve_exec_command
 from .privilege import apply_admin
-from .platform_utils import is_linux, is_windows
+from .platform_utils import is_linux, is_mac, is_windows
 
 
 # Autostart handling
@@ -13,6 +15,31 @@ def linux_autostart_dir():
     d = os.path.expanduser("~/.config/autostart")
     os.makedirs(d, exist_ok=True)
     return d
+
+
+def mac_launch_agents_dir():
+    d = os.path.expanduser("~/Library/LaunchAgents")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def mac_scripts_dir():
+    d = os.path.expanduser("~/Library/Application Support/CommandVault/autostart-scripts")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def autostart_scripts_dir():
+    """Where the per-entry wrapper scripts live (Linux and macOS)."""
+    return mac_scripts_dir() if is_mac() else linux_autostart_scripts_dir()
+
+
+def write_launch_agent(path, label, script_path):
+    """A macOS per-user LaunchAgent that runs `bash script` at every login.
+    Dropping the plist into ~/Library/LaunchAgents is enough; launchd loads it at the next login."""
+    plist = {"Label": label, "ProgramArguments": ["/bin/bash", script_path], "RunAtLoad": True}
+    with open(path, "wb") as f:
+        plistlib.dump(plist, f)
 
 
 def windows_startup_dir():
@@ -55,6 +82,8 @@ def app_autostart_path():
         return os.path.join(linux_autostart_dir(), "command-vault.desktop")
     if is_windows():
         return os.path.join(windows_startup_dir(), "CommandVault.bat")
+    if is_mac():
+        return os.path.join(mac_launch_agents_dir(), "com.commandvault.app.plist")
     return None
 
 
@@ -64,7 +93,7 @@ def app_autostart_enabled():
 
 
 def app_autostart_script_path():
-    return os.path.join(linux_autostart_scripts_dir(), "command-vault-autostart.sh")
+    return os.path.join(autostart_scripts_dir(), "command-vault-autostart.sh")
 
 
 def set_app_autostart(enabled):
@@ -74,7 +103,7 @@ def set_app_autostart(enabled):
     if not enabled:
         if os.path.exists(path):
             os.remove(path)
-        if is_linux():
+        if is_linux() or is_mac():
             script_path = app_autostart_script_path()
             if os.path.exists(script_path):
                 os.remove(script_path)
@@ -115,6 +144,12 @@ def set_app_autostart(enabled):
         )
         with open(path, "w") as f:
             f.write(content)
+    elif is_mac():
+        script_path = app_autostart_script_path()
+        with open(script_path, "w") as f:
+            f.write("#!/bin/bash\nsleep 3\n" + app_relaunch_command() + "\n")
+        os.chmod(script_path, 0o755)
+        write_launch_agent(path, "com.commandvault.app", script_path)
     elif is_windows():
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w") as f:
@@ -127,11 +162,17 @@ def linux_autostart_scripts_dir():
     return d
 
 
+def _safe_label_id(entry_id):
+    return re.sub(r"[^A-Za-z0-9_-]", "_", entry_id or "entry")
+
+
 def entry_autostart_path(entry_id):
     if is_linux():
         return os.path.join(linux_autostart_dir(), f"cv-{entry_id}.desktop")
     if is_windows():
         return os.path.join(windows_startup_dir(), f"cv-{entry_id}.bat")
+    if is_mac():
+        return os.path.join(mac_launch_agents_dir(), f"com.commandvault.entry.{_safe_label_id(entry_id)}.plist")
     return None
 
 
@@ -150,7 +191,7 @@ def set_entry_autostart(entry, enabled):
     if not enabled:
         if os.path.exists(path):
             os.remove(path)
-        script_path = os.path.join(linux_autostart_scripts_dir(), f"cv-{entry['id']}.sh")
+        script_path = os.path.join(autostart_scripts_dir(), f"cv-{entry['id']}.sh")
         if os.path.exists(script_path):
             os.remove(script_path)
         return
@@ -171,12 +212,12 @@ def set_entry_autostart(entry, enabled):
     else:
         exec_cmd = resolve_exec_command(command)
 
-    if is_linux():
+    if is_linux() or is_mac():
         # Write a real wrapper script instead of inlining into Exec=, since
         # squashing multiline commands onto one line breaks as soon as a
         # line has a "#" comment (bash treats the rest of that line as a
         # comment, silently dropping every command after it).
-        script_path = os.path.join(linux_autostart_scripts_dir(), f"cv-{entry['id']}.sh")
+        script_path = os.path.join(autostart_scripts_dir(), f"cv-{entry['id']}.sh")
         lines = ["#!/bin/bash", "sleep 3"]
         if working_dir:
             lines.append(f'cd "{working_dir}" || exit 1')
@@ -188,6 +229,9 @@ def set_entry_autostart(entry, enabled):
             f.write("\n".join(lines) + "\n")
         os.chmod(script_path, 0o755)
 
+        if is_mac():
+            write_launch_agent(path, f"com.commandvault.entry.{_safe_label_id(entry['id'])}", script_path)
+            return
         content = (
             "[Desktop Entry]\n"
             "Type=Application\n"

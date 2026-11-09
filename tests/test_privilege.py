@@ -118,8 +118,10 @@ def test_admin_prefix_disabled_where_unsupported(monkeypatch):
 
 def test_install_script_is_valid_shell_and_quotes_content():
     script = cv_priv._install_script("me ALL=(root) NOPASSWD: /usr/bin/x 'y'\n", "/etc/sudoers.d/command-vault-1")
+    import shutil
     import subprocess
-    assert subprocess.run(["sh", "-n", "-c", script]).returncode == 0
+    if shutil.which("sh"):
+        assert subprocess.run(["sh", "-n", "-c", script]).returncode == 0
     assert "visudo -cf" in script and "install -m 0440" in script
 
 

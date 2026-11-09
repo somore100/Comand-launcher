@@ -2,6 +2,8 @@
 import tkinter as tk
 from tkinter import messagebox, ttk
 from .bulk import build_entries, parse_bulk_lines
+from .privilege import ADMIN_OFF, admin_choice_labels, supports_admin
+from .theme import SCHEDULE_TIME_RE
 from .theme import (COLOR_ACCENT, COLOR_ACCENT_DIM, COLOR_BG, COLOR_PANEL, COLOR_SIDEBAR, COLOR_SUBTEXT,
                     COLOR_TEXT, FONT_NORMAL, FONT_SMALL, UNCATEGORIZED)
 
@@ -60,6 +62,28 @@ class BulkAddDialog(tk.Toplevel):
                        selectcolor=COLOR_PANEL, activebackground=COLOR_BG, activeforeground=COLOR_TEXT,
                        font=FONT_SMALL).pack(anchor="w", padx=16, pady=(8, 0))
 
+        extra = tk.Frame(self, bg=COLOR_BG)
+        extra.pack(fill="x", padx=16, pady=(8, 0))
+        self.autostart_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(extra, text="Run each at startup", variable=self.autostart_var, bg=COLOR_BG, fg=COLOR_TEXT,
+                       selectcolor=COLOR_PANEL, activebackground=COLOR_BG, activeforeground=COLOR_TEXT,
+                       font=FONT_SMALL).pack(side="left")
+        self.schedule_var = tk.BooleanVar(value=False)
+        self.schedule_time_var = tk.StringVar(value="09:00")
+        tk.Checkbutton(extra, text="Run daily at", variable=self.schedule_var, bg=COLOR_BG, fg=COLOR_TEXT,
+                       selectcolor=COLOR_PANEL, activebackground=COLOR_BG, activeforeground=COLOR_TEXT,
+                       font=FONT_SMALL).pack(side="left", padx=(14, 0))
+        tk.Entry(extra, textvariable=self.schedule_time_var, width=6, font=FONT_NORMAL, bg=COLOR_PANEL,
+                 fg=COLOR_TEXT, insertbackground=COLOR_TEXT, relief="flat").pack(side="left", padx=(4, 0))
+        self.admin_var = tk.StringVar(value=ADMIN_OFF)
+        self._admin_labels = dict(admin_choice_labels())
+        if supports_admin():
+            tk.Label(extra, text="Admin rights:", bg=COLOR_BG, fg=COLOR_SUBTEXT, font=FONT_SMALL
+                     ).pack(side="left", padx=(14, 4))
+            self.admin_box = ttk.Combobox(extra, state="readonly", width=24, values=list(self._admin_labels.values()))
+            self.admin_box.set(self._admin_labels[ADMIN_OFF])
+            self.admin_box.pack(side="left")
+
         tk.Label(self, text="Preview", bg=COLOR_BG, fg=COLOR_SUBTEXT, font=FONT_SMALL).pack(anchor="w", padx=16, pady=(10, 2))
         pf = tk.Frame(self, bg=COLOR_BG)
         pf.pack(fill="both", expand=True, padx=16)
@@ -82,8 +106,13 @@ class BulkAddDialog(tk.Toplevel):
 
     def _entries(self):
         rows = parse_bulk_lines(self.text.get("1.0", "end-1c"))
+        admin_mode = ADMIN_OFF
+        if supports_admin():
+            admin_mode = next((k for k, v in self._admin_labels.items() if v == self.admin_box.get()), ADMIN_OFF)
+        schedule_time = self.schedule_time_var.get().strip() if self.schedule_var.get() else ""
         return build_entries(rows, self.category_var.get().strip() or UNCATEGORIZED,
-                             self.mode_var.get(), self.folder_var.get())
+                             self.mode_var.get(), self.folder_var.get(), autostart=self.autostart_var.get(),
+                             schedule_time=schedule_time, admin_mode=admin_mode)
 
     def _refresh_preview(self):
         self.preview.delete(*self.preview.get_children())
@@ -96,6 +125,14 @@ class BulkAddDialog(tk.Toplevel):
         entries = self._entries()
         if not entries:
             messagebox.showinfo("Nothing to add", "Paste at least one command first.", parent=self)
+            return
+        if self.schedule_var.get() and not SCHEDULE_TIME_RE.match(self.schedule_time_var.get().strip()):
+            messagebox.showwarning("Invalid time", "Schedule time must be 24-hour HH:MM, e.g. 09:00.", parent=self)
+            return
+        if entries[0]["admin_mode"] == "remember" and len(entries) > 1 and not messagebox.askyesno(
+                "Administrator rights",
+                f"Each of the {len(entries)} entries needs its own one-time system password approval. Continue?",
+                parent=self):
             return
         self.result = entries
         self.destroy()

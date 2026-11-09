@@ -145,6 +145,7 @@ def _normalize_vault_data(raw):
         cmd.setdefault("browser_profile", False)
         cmd.setdefault("browser_profile_dir", "")  # "" = default per-entry folder
         cmd.setdefault("routine", {})  # {"steps": [...], "show_browser": bool} for entry_type "routine"
+        cmd.setdefault("ai_allowed", False)  # may AI assistants run this through the MCP server?
         cmd.setdefault("admin_mode", "off")  # off | ask | remember (sudo handling)
         cmd.setdefault("admin_rule_hash", "")  # hash of the installed sudoers rule
     return raw
@@ -229,6 +230,7 @@ def _blank_entry(name="", command=""):
         "browser_profile": False,
         "browser_profile_dir": "",
         "routine": {},
+        "ai_allowed": False,
         "admin_mode": "off",
         "admin_rule_hash": "",
     }

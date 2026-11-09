@@ -11,8 +11,10 @@ import tkinter as tk
 from tkinter import ttk
 from .compat import HAVE_PYNPUT, HAVE_PYSTRAY
 from .autostart import app_autostart_enabled, set_app_autostart, set_entry_autostart
+from .scheduling import set_entry_schedule
 from .config import APP_NAME, APP_VERSION, FEEDBACK_RELAY_TOKEN, FEEDBACK_RELAY_URL, GITHUB_REPO, SUPPORT_EMAIL
 from .feedback import FeedbackConfig
+from .mcp_server import client_config_snippet
 from .feedback_dialog import FeedbackDialog
 from .data import _load_config, _normalize_vault_data, _save_config, get_data_dir, get_data_file, load_data, save_data, set_data_dir
 from .hotkeys import AllKeybindsDialog, HotkeyRecorderDialog
@@ -222,6 +224,24 @@ class SettingsDialog(tk.Toplevel):
                   ).pack(anchor="w", padx=16, pady=(10, 4))
         tk.Label(body, textvariable=self.update_status_var, bg=COLOR_BG, fg=COLOR_SUBTEXT, font=FONT_SMALL,
                  wraplength=360, justify="left").pack(anchor="w", padx=16, pady=(0, 16))
+
+        tk.Frame(body, bg=COLOR_PANEL, height=1).pack(fill="x", padx=16, pady=(0, 14))
+        tk.Label(body, text="AI assistants (MCP)", bg=COLOR_BG, fg=COLOR_TEXT, font=FONT_HEADING
+                 ).pack(anchor="w", padx=16, pady=(0, 4))
+        tk.Label(body, text="Let an AI assistant (Claude Desktop, Claude Code, ...) run entries you've allowed, via "
+                            "the Model Context Protocol. Tick \"AI assistants\" in an entry to expose it; "
+                            "nothing is exposed by default. Add this to your assistant's MCP settings:",
+                 bg=COLOR_BG, fg=COLOR_SUBTEXT, font=FONT_SMALL, wraplength=360, justify="left"
+                 ).pack(anchor="w", padx=16)
+        snippet = client_config_snippet()
+        mcp_box = tk.Text(body, height=min(9, snippet.count("\n") + 1), width=48, font=("Consolas", 8),
+                          bg=COLOR_PANEL, fg=COLOR_TEXT, relief="flat", wrap="none")
+        mcp_box.insert("1.0", snippet)
+        mcp_box.configure(state="disabled")
+        mcp_box.pack(anchor="w", padx=16, pady=(6, 0))
+        tk.Button(body, text="Copy", command=lambda: (self.clipboard_clear(), self.clipboard_append(snippet)),
+                  bg=COLOR_PANEL, fg=COLOR_TEXT, relief="flat", font=FONT_SMALL, padx=10
+                  ).pack(anchor="w", padx=16, pady=(4, 16))
 
         tk.Frame(body, bg=COLOR_PANEL, height=1).pack(fill="x", padx=16, pady=(0, 14))
         tk.Label(body, text="Feedback", bg=COLOR_BG, fg=COLOR_TEXT, font=FONT_HEADING
@@ -457,6 +477,16 @@ class SettingsDialog(tk.Toplevel):
             messagebox.showerror("Import failed", f"Couldn't write the new vault:\n{e}")
             return
 
+        # The OS keeps its own per-entry state (startup files, cron lines / scheduled tasks). Clear what
+        # the vault being replaced registered, or removed entries would keep running at login / on schedule.
+        old_entries = list(self.master_app.data.get("commands", []))
+        for old in old_entries:
+            for undo in (lambda e: set_entry_autostart(e, False), lambda e: set_entry_schedule(e, False)):
+                try:
+                    undo(old)
+                except (NotImplementedError, RuntimeError, OSError):
+                    pass
+
         self.master_app.data = imported
         self.master_app._refresh_categories()
         self.master_app._refresh_list()
@@ -468,12 +498,26 @@ class SettingsDialog(tk.Toplevel):
         # (re)created here or they'd show "on" in the UI without actually
         # running at login on this machine.
         autostart_failures = 0
+        schedule_failures = 0
+        admin_entries = []
         for entry in imported.get("commands", []):
             if entry.get("autostart"):
                 try:
                     set_entry_autostart(entry, True)
                 except (NotImplementedError, OSError):
                     autostart_failures += 1
+            # Scheduled runs live in the OS scheduler too, so re-register them here.
+            if entry.get("schedule_enabled"):
+                try:
+                    set_entry_schedule(entry, True)
+                except (NotImplementedError, RuntimeError, OSError):
+                    schedule_failures += 1
+            # A "don't ask" admin rule is installed per machine, so an imported one isn't active here.
+            if entry.get("admin_mode") == "remember":
+                entry["admin_rule_hash"] = ""
+                admin_entries.append(entry)
+        if admin_entries:
+            save_data(imported)
 
         msg = f"Imported {new_n} command{'s' if new_n != 1 else ''}."
         if backup_path:
@@ -481,7 +525,17 @@ class SettingsDialog(tk.Toplevel):
         if autostart_failures:
             msg += (f"\n\n{autostart_failures} autostart entr{'y' if autostart_failures == 1 else 'ies'} "
                      "couldn't be registered on this machine/OS and may need re-enabling manually.")
+        if schedule_failures:
+            msg += (f"\n\n{schedule_failures} scheduled entr{'y' if schedule_failures == 1 else 'ies'} "
+                    "couldn't be registered with this system's scheduler. Open Edit and Save to retry.")
         messagebox.showinfo("Vault imported", msg)
+        if admin_entries and messagebox.askyesno(
+                "Administrator rights",
+                f"{len(admin_entries)} imported entr{'y is' if len(admin_entries) == 1 else 'ies are'} set to run "
+                "without a password, which has to be approved again on this computer (one system password "
+                "prompt each). Do that now?"):
+            for entry in admin_entries:
+                self.master_app._apply_admin(entry)
 
 
 # ---------------------------------------------------------------------------

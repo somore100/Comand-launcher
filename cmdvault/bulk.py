@@ -97,13 +97,21 @@ def parse_bulk_lines(text):
     return rows
 
 
-def build_entries(rows, category, run_mode, use_script_folder):
-    """Turn parsed rows into full entry dicts ready for the vault."""
+def build_entries(rows, category, run_mode, use_script_folder, autostart=False, schedule_time="",
+                  admin_mode="off"):
+    """Turn parsed rows into full entry dicts ready for the vault. `schedule_time` ("HH:MM") turns on a
+    daily schedule for every entry; `admin_mode` is off/ask/remember."""
     entries = []
     for r in rows:
         e = _blank_entry(r["name"], r["command"])
         e["category"] = category
         e["run_mode"] = run_mode
+        e["autostart"] = bool(autostart)
+        if schedule_time:
+            e["schedule_enabled"] = True
+            e["schedule_time"] = schedule_time
+            e["schedule_days"] = []
+        e["admin_mode"] = admin_mode
         path = r["path"]
         if path and path.lower().endswith(".appimage") and os.path.isfile(r["command"].strip()):
             e["entry_type"] = "appimage"

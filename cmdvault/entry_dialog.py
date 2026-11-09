@@ -461,6 +461,23 @@ class EntryDialog(tk.Toplevel):
                      bg=COLOR_BG, fg=COLOR_SUBTEXT, font=("Segoe UI", 8), wraplength=380, justify="left"
                      ).pack(anchor="w", pady=(4, 0))
 
+        # AI access (Model Context Protocol server)
+        self.ai_var = tk.BooleanVar(value=bool(entry.get("ai_allowed", False)) if entry else False)
+        sec_ai = CollapsibleSection(body, "AI assistants", "")
+        sec_ai.grid(row=19, column=0, columnspan=2, sticky="we", padx=16, pady=(6, 10))
+        self.ai_var.trace_add("write", lambda *_: sec_ai.set_summary("Allowed" if self.ai_var.get() else "Off"))
+        sec_ai.set_summary("Allowed" if self.ai_var.get() else "Off")
+        tk.Checkbutton(sec_ai.content, text="Let AI assistants run this entry (through the MCP server)",
+                       variable=self.ai_var, bg=COLOR_BG, fg=COLOR_TEXT, selectcolor=COLOR_PANEL,
+                       activebackground=COLOR_BG, activeforeground=COLOR_TEXT, font=FONT_SMALL).pack(anchor="w")
+        tk.Label(sec_ai.content,
+                 text="Off by default. Only entries you tick here are visible to an AI assistant connected via "
+                      "\"command-vault --mcp\" (see Settings). It can run them and read their output, never edit "
+                      "or delete anything. Entries with administrator rights are never exposed. Every AI run is "
+                      "logged to mcp-log.txt.",
+                 bg=COLOR_BG, fg=COLOR_SUBTEXT, font=("Segoe UI", 8), wraplength=380, justify="left"
+                 ).pack(anchor="w", pady=(4, 0))
+
         # Launch shortcut (optional, needs pynput)
         self.entry_hotkey_pynput = entry.get("hotkey_pynput", "") if entry else ""
         self.entry_hotkey_display_var = tk.StringVar(
@@ -702,6 +719,7 @@ class EntryDialog(tk.Toplevel):
             "browser_profile": bool(self.browser_profile_var.get()) or (is_routine and self.routine.get("kind", "web") == "web"),
             "routine": self.routine if is_routine else {},
             "browser_profile_dir": self.browser_profile_dir_var.get().strip(),
+            "ai_allowed": bool(self.ai_var.get()),
             "admin_mode": admin_mode,
             "admin_rule_hash": self.entry.get("admin_rule_hash", "") if self.entry else "",
         }

@@ -687,6 +687,12 @@ class CommandVault(tk.Tk):
             if entry["category"] not in self.data["categories"]:
                 self.data["categories"].append(entry["category"])
         save_data(self.data)
+        for entry in dialog.result:
+            self._apply_admin(entry)
+            if entry.get("autostart"):
+                self._apply_autostart(entry)
+            if entry.get("schedule_enabled"):
+                self._apply_schedule(entry)
         self._refresh_categories()
         self._refresh_list()
         self._log(f"Added {len(dialog.result)} entries.")

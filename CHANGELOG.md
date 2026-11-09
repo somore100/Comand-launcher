@@ -6,6 +6,10 @@ All notable changes to Command Vault are documented here. Format loosely follows
 
 ### Added
 
+* MCP server for AI assistants: `command-vault --mcp` runs a headless Model Context Protocol server over stdio (works from source, the AppImage and the packaged builds). An assistant can list the entries you allowed, run them (no window; exit code and output returned) and read a scheduled entry's last result. Nothing is exposed by default: tick "AI assistants" in an entry's Edit dialog to allow it. It cannot create, edit or delete anything, entries with administrator rights are never exposed, input values for `{{placeholders}}` are rejected if they contain shell syntax, and every AI run is logged to `mcp-log.txt`. Settings has a copyable config snippet for the assistant.
+* macOS startup: "Run when the computer starts" now works on macOS for Command Vault itself and for individual entries (per-user LaunchAgents in `~/Library/LaunchAgents`).
+* "+ Add many" can now set "Run at startup", a daily schedule time and administrator rights for the whole batch (admin approvals are asked per entry).
+* Tests: GUI smoke tests that build every dialog against a real Tk (skipped without a display), and a GitHub Actions workflow (`tests.yml`) that runs the whole suite on Linux (under Xvfb), Windows and macOS.
 * Automation helpers for scripts (`cvauto`): a small library Command Vault writes and keeps up to date so any Python script can drive a website (`cvauto.web()`: goto/click/fill/press/wait_text with alternatives and retries) or a desktop program (`cvauto.app`: launch, wait_window, focus, keys, type_text) on Linux (xdotool/X11), Windows (PowerShell) and macOS (osascript). The routine editor's generated scripts now use the same library. A new "\u24D8 Automation" button in the Edit Entry dialog explains it with copyable examples, the library folder and the Python to use.
 * Program entries now match the OS: "AppImage / program" on Linux (also `.desktop` files), "App (.app)" on macOS (launched with `open`, picker scans /Applications) and "Program (.exe)" on Windows (`.exe`, `.lnk`, `.bat`). Existing AppImage entries keep working; only real `.AppImage` files get the extract-and-run startup treatment.
 * README: architecture diagram (GitDiagram, generated 2026-11-05).
@@ -37,6 +41,7 @@ All notable changes to Command Vault are documented here. Format loosely follows
 
 ### Fixed
 
+* Importing a vault now re-registers schedules (not just startup entries) with the OS, clears the startup/schedule registrations of the vault it replaces so removed entries stop running, and offers to re-approve imported "don't ask" administrator entries on this computer.
 * Dialogs are now resizable (wider and taller, never smaller than their content needs or 320 px tall) and the main fields stretch with them.
 * Dialogs opening too narrow, which cut off the right-hand side of fields and buttons (the scrolling area now takes the width of its content).
 * UI no longer overflows small screens. The Edit Entry and Settings dialogs now scroll, with their Save/Cancel/Close buttons pinned at the bottom and the height capped to the screen; "Add many" caps its size and keeps its buttons visible. On the main window, "+ Add" / "+ Add many" are no longer clipped in a narrow window (the search box shrinks instead), the list's scrollbar stays visible, and list columns can shrink. Escape closes these dialogs.
