@@ -11,7 +11,7 @@ import tkinter as tk
 from tkinter import ttk
 from .compat import HAVE_PYNPUT, HAVE_PYSTRAY
 from .autostart import app_autostart_enabled, set_app_autostart, set_entry_autostart
-from .config import APP_NAME, APP_VERSION, FEEDBACK_RELAY_TOKEN, FEEDBACK_RELAY_URL, SUPPORT_EMAIL
+from .config import APP_NAME, APP_VERSION, FEEDBACK_RELAY_TOKEN, FEEDBACK_RELAY_URL, GITHUB_REPO, SUPPORT_EMAIL
 from .feedback import FeedbackConfig
 from .feedback_dialog import FeedbackDialog
 from .data import _load_config, _normalize_vault_data, _save_config, get_data_dir, get_data_file, load_data, save_data, set_data_dir
@@ -236,7 +236,7 @@ class SettingsDialog(tk.Toplevel):
 
     def _open_feedback(self):
         FeedbackDialog(self, FeedbackConfig(APP_NAME, APP_VERSION, SUPPORT_EMAIL,
-                                            FEEDBACK_RELAY_URL, FEEDBACK_RELAY_TOKEN))
+                                            FEEDBACK_RELAY_URL, FEEDBACK_RELAY_TOKEN, GITHUB_REPO))
 
     def _toggle_auto_update_check(self):
         cfg = _load_config()

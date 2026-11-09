@@ -11,12 +11,14 @@ CFG = fb.FeedbackConfig("Command Vault", "1.7.0", "support@example.com", "https:
 
 
 def test_validate():
-    assert fb.validate("Bug Report", "t", "d") == ""
-    assert fb.validate("Nope", "t", "d")
-    assert fb.validate("Bug Report", "  ", "d")
-    assert fb.validate("Bug Report", "t", "  ")
-    assert fb.validate("Bug Report", "x" * 500, "d")
-    assert fb.validate("Bug Report", "t", "d" * 9000)
+    assert fb.validate("Bug Report", "Title", "A real description") == ""
+    assert fb.validate("Bug Report", "abc", "A real description")      # title too short
+    assert fb.validate("Bug Report", "Title", "short")                 # description too short
+    assert fb.validate("Nope", "Title", "A real description")
+    assert fb.validate("Bug Report", "  ", "A real description")
+    assert fb.validate("Bug Report", "Title", "  ")
+    assert fb.validate("Bug Report", "x" * 500, "d" * 20)
+    assert fb.validate("Bug Report", "Title", "d" * 9000)
 
 
 def test_subject_format():
@@ -72,3 +74,19 @@ def test_send_via_relay(monkeypatch):
     def boom(r, timeout): raise fb.urllib.error.URLError("down")
     monkeypatch.setattr(fb.urllib.request, "urlopen", boom)
     assert fb.send_via_relay(CFG, "s", "b")[0] is False
+
+
+def test_web_fallback_urls():
+    url = fb.build_gmail_url(CFG, "[A] [BUG] x", "body & more")
+    q = urllib.parse.parse_qs(url.split("?", 1)[1])
+    assert url.startswith("https://mail.google.com/mail/?") and q["to"] == ["support@example.com"]
+    assert q["su"] == ["[A] [BUG] x"] and q["body"] == ["body & more"]
+    assert fb.build_github_issue_url(CFG, "s", "b") == ""
+    cfg = fb.FeedbackConfig("A", "1", "s@e.com", github_repo="me/repo")
+    gh = fb.build_github_issue_url(cfg, "[A] t", "x" * 9000)
+    assert gh.startswith("https://github.com/me/repo/issues/new?") and len(gh) < 9000
+
+
+def test_open_mailto_false_without_a_mail_client(monkeypatch):
+    monkeypatch.setattr(fb, "has_mail_client", lambda: False)
+    assert fb.open_mailto("mailto:x@y.z?subject=a") is False

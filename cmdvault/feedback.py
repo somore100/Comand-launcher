@@ -18,6 +18,7 @@ import json
 import os
 import platform
 import re
+import sys
 import subprocess
 import urllib.error
 import urllib.parse
@@ -33,6 +34,8 @@ REPORT_TYPES = {
     "Other": "OTHER",
 }
 
+MIN_TITLE = 4
+MIN_DESCRIPTION = 10
 MAX_TITLE = 120
 MAX_DESCRIPTION = 8000
 MAILTO_BODY_LIMIT = 1800  # many mail clients/OSes choke on longer mailto: URLs
@@ -45,6 +48,7 @@ class FeedbackConfig:
     support_email: str
     relay_url: str = ""    # "" = no relay, use mailto
     relay_token: str = ""  # shared secret checked by the relay (not a mail credential)
+    github_repo: str = ""  # "owner/name": adds a "Report on GitHub" route for people without email
 
 
 def _run(cmd, timeout=4):
@@ -152,10 +156,14 @@ def validate(report_type, title, description):
         return "Choose a report type."
     if not title.strip():
         return "Please enter a title."
+    if len(title.strip()) < MIN_TITLE:
+        return f"The title is too short (at least {MIN_TITLE} characters)."
     if len(title) > MAX_TITLE:
         return f"The title is too long (max {MAX_TITLE} characters)."
     if not description.strip():
         return "Please describe the problem or suggestion."
+    if len(description.strip()) < MIN_DESCRIPTION:
+        return f"The description is too short to be useful (at least {MIN_DESCRIPTION} characters)."
     if len(description) > MAX_DESCRIPTION:
         return f"The description is too long (max {MAX_DESCRIPTION} characters)."
     return ""
@@ -216,7 +224,43 @@ def build_mailto(cfg, subject, body):
     return f"mailto:{cfg.support_email}?{query}", truncated
 
 
+def build_gmail_url(cfg, subject, body):
+    """Gmail's web compose window, for people with a Gmail account but no mail app."""
+    body = body[:6000]
+    query = urllib.parse.urlencode({"view": "cm", "fs": "1", "to": cfg.support_email, "su": subject, "body": body},
+                                   quote_via=urllib.parse.quote)
+    return "https://mail.google.com/mail/?" + query
+
+
+def build_github_issue_url(cfg, subject, body):
+    """A pre-filled GitHub 'new issue' page, for people with no email set up at all
+    (needs a free GitHub account). Empty string when no repo is configured."""
+    if not cfg.github_repo:
+        return ""
+    body = body[:5000]
+    query = urllib.parse.urlencode({"title": subject, "body": body}, quote_via=urllib.parse.quote)
+    return f"https://github.com/{cfg.github_repo}/issues/new?" + query
+
+
+def has_mail_client():
+    """False on Linux when no program is registered for mailto: links (opening one
+    then fails silently with 'location is not supported'). Assumed True elsewhere."""
+    if not sys.platform.startswith("linux"):
+        return True
+    out = _run(["xdg-mime", "query", "default", "x-scheme-handler/mailto"])
+    return bool(out.strip())
+
+
 def open_mailto(url):
+    """Opens a link in the user's default handler. Returns False when nothing opened."""
+    if url.startswith("mailto:") and not has_mail_client():
+        return False
+    if sys.platform.startswith("linux"):
+        try:
+            res = subprocess.run(["xdg-open", url], capture_output=True, text=True, timeout=15)
+            return res.returncode == 0 and "not supported" not in (res.stderr or "")
+        except (OSError, subprocess.SubprocessError):
+            pass
     try:
         return bool(webbrowser.open(url))
     except webbrowser.Error:

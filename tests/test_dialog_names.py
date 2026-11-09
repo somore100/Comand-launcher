@@ -27,7 +27,9 @@ def test_no_dialog_overrides_tkinter_internals():
               (scrollframe.ScrollableBody, tk.Frame), (scrollframe.CollapsibleSection, tk.Frame)]
     problems = []
     for cls, base in checks:
-        clash = (set(vars(cls)) - ALLOWED) & _tk_names(base)
+        # Python 3.13+ adds __firstlineno__/__static_attributes__ to every class; ignore dunders.
+        own = {n for n in vars(cls) if not n.startswith("__")}
+        clash = (own - ALLOWED) & _tk_names(base)
         if clash:
             problems.append((cls.__name__, sorted(clash)))
     assert not problems, problems

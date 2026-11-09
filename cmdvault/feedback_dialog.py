@@ -83,6 +83,11 @@ class FeedbackDialog(tk.Toplevel):
                   font=FONT_NORMAL, padx=14, pady=4).pack(side="right", padx=(0, 8))
         tk.Button(bar, text="Copy report", command=self._copy, bg=COLOR_PANEL, fg=COLOR_TEXT, relief="flat",
                   font=FONT_SMALL, padx=10, pady=4).pack(side="left")
+        tk.Button(bar, text="Open in Gmail", command=lambda: self._open_web("gmail"), bg=COLOR_PANEL,
+                  fg=COLOR_TEXT, relief="flat", font=FONT_SMALL, padx=10, pady=4).pack(side="left", padx=(6, 0))
+        if cfg.github_repo:
+            tk.Button(bar, text="Report on GitHub", command=lambda: self._open_web("github"), bg=COLOR_PANEL,
+                      fg=COLOR_TEXT, relief="flat", font=FONT_SMALL, padx=10, pady=4).pack(side="left", padx=(6, 0))
 
         fit_dialog(self, master)
 
@@ -121,6 +126,21 @@ class FeedbackDialog(tk.Toplevel):
         self.clipboard_append(f"Subject: {report[0]}\n\n{report[1]}")
         self.status_var.set("Report copied to the clipboard.")
 
+    def _open_web(self, where):
+        """No mail app? Open Gmail's web compose page or a pre-filled GitHub issue (visible, user presses Send)."""
+        report = self._collect()
+        if not report:
+            return
+        subject, body = report
+        url = (fb.build_gmail_url(self.cfg, subject, body) if where == "gmail"
+               else fb.build_github_issue_url(self.cfg, subject, body))
+        self.clipboard_clear()
+        self.clipboard_append(f"To: {self.cfg.support_email}\nSubject: {subject}\n\n{body}")
+        if fb.open_mailto(url):
+            self.status_var.set("Opened in your browser. Press Send / Submit there. The full report is also on your clipboard.")
+        else:
+            self.status_var.set("Couldn't open the browser; the full report is on your clipboard to paste.")
+
     def _send(self):
         if self._sending:
             return
@@ -151,11 +171,24 @@ class FeedbackDialog(tk.Toplevel):
             self.destroy()
             return
         self.status_var.set(msg)
+        self.status_var.set(msg + "  Use \"Open in Gmail\"" + (", \"Report on GitHub\"" if self.cfg.github_repo else "")
+                            + " or \"Copy report\" instead.")
         if messagebox.askyesno("Couldn't send", f"{msg}\n\nOpen your email app with the report instead?",
                                parent=self):
             self._send_mailto(subject, body)
 
     def _send_mailto(self, subject, body):
+        if not fb.has_mail_client():
+            if messagebox.askyesno("No email app found",
+                                   "This computer has no email app set up. Open Gmail in your browser with the "
+                                   "report filled in instead?\n\n(Or choose No and use \"Copy report\" or "
+                                   "\"Report on GitHub\".)", parent=self):
+                self._open_web("gmail")
+            else:
+                self.clipboard_clear()
+                self.clipboard_append(f"To: {self.cfg.support_email}\nSubject: {subject}\n\n{body}")
+                self.status_var.set("The full report is on your clipboard.")
+            return
         url, truncated = fb.build_mailto(self.cfg, subject, body)
         self.clipboard_clear()
         self.clipboard_append(f"To: {self.cfg.support_email}\nSubject: {subject}\n\n{body}")
