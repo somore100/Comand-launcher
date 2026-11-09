@@ -20,6 +20,8 @@ Ordered work list. Update as items ship.
    - Generic version: an ordered "after launch" step list (wait N seconds / wait for a window, send keys, click). Needs `xdotool` on X11; native Wayland blocks synthetic input (would need `ydotool`/portals) - decide support level first. Windows could use PowerShell/AutoHotkey, macOS `osascript`.
    - Earlier a step-list editor was rejected for web bots, but for native apps it is the simplest option.
 
+6. **MCP server** (idea, not started): `command-vault --mcp` over stdio so AI assistants (Claude, etc.) can list entries, read the last run result and run entries the user has explicitly marked "AI may run". Details in the discussion: per-entry opt-in flag (default off), placeholders become tool arguments, admin-rights entries excluded unless approved, run output returned, no create/edit/delete tools in v1.
+
 ## Known gaps / unverified
 - Windows scheduled-run status wrapper and Task Scheduler paths never run on real Windows.
 - Cron/terminal/tray/hotkeys only unit-tested in a sandbox; admin-rights install (pkexec) not yet tried on real machines.
