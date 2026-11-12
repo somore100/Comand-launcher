@@ -1,5 +1,6 @@
 """terminals -- split out of the former monolithic main.py."""
 from tkinter import messagebox
+import json
 import os
 import shlex
 import subprocess
@@ -14,21 +15,32 @@ from .placeholders import PlaceholderDialog, extract_placeholders, fill_placehol
 # Terminal selection: auto-detect, or a user-chosen/custom preference
 # ---------------------------------------------------------------------------
 NAMED_LINUX_TERMINALS = {
-    "GNOME Terminal": lambda cmd: ["gnome-terminal", "--", "bash", "-c", cmd + "; exec bash"],
-    "Konsole": lambda cmd: ["konsole", "-e", "bash", "-c", cmd + "; exec bash"],
-    "Xfce Terminal": lambda cmd: ["xfce4-terminal", "-e", "bash", "-c", cmd + "; exec bash"],
-    "COSMIC Terminal": lambda cmd: ["cosmic-term", "-e", "bash", "-c", cmd + "; exec bash"],
-    "xterm": lambda cmd: ["xterm", "-e", "bash", "-c", cmd + "; exec bash"],
-    "Alacritty": lambda cmd: ["alacritty", "-e", "bash", "-c", cmd + "; exec bash"],
-    "kitty": lambda cmd: ["kitty", "bash", "-c", cmd + "; exec bash"],
-    "Terminator": lambda cmd: ["terminator", "-x", "bash", "-c", cmd + "; exec bash"],
+    "GNOME Terminal": lambda cmd: ["gnome-terminal", "--", "bash", "-c", cmd + "\nexec bash"],
+    "Konsole": lambda cmd: ["konsole", "-e", "bash", "-c", cmd + "\nexec bash"],
+    "Xfce Terminal": lambda cmd: ["xfce4-terminal", "-e", "bash", "-c", cmd + "\nexec bash"],
+    "COSMIC Terminal": lambda cmd: ["cosmic-term", "-e", "bash", "-c", cmd + "\nexec bash"],
+    "xterm": lambda cmd: ["xterm", "-e", "bash", "-c", cmd + "\nexec bash"],
+    "Alacritty": lambda cmd: ["alacritty", "-e", "bash", "-c", cmd + "\nexec bash"],
+    "kitty": lambda cmd: ["kitty", "bash", "-c", cmd + "\nexec bash"],
+    "Terminator": lambda cmd: ["terminator", "-x", "bash", "-c", cmd + "\nexec bash"],
+    "Ptyxis": lambda cmd: ["ptyxis", "--", "bash", "-c", cmd + "\nexec bash"],
+    "GNOME Console": lambda cmd: ["kgx", "--", "bash", "-c", cmd + "\nexec bash"],
+    "foot": lambda cmd: ["foot", "bash", "-c", cmd + "\nexec bash"],
+    "WezTerm": lambda cmd: ["wezterm", "start", "--", "bash", "-c", cmd + "\nexec bash"],
 }
 
 TERMINAL_BUILDERS = [
-    lambda cmd: ["cosmic-term", "-e", "bash", "-c", cmd + "; exec bash"],
-    lambda cmd: ["gnome-terminal", "--", "bash", "-c", cmd + "; exec bash"],
-    lambda cmd: ["konsole", "-e", "bash", "-c", cmd + "; exec bash"],
-    lambda cmd: ["xfce4-terminal", "-e", "bash", "-c", cmd + "; exec bash"],
+    lambda cmd: ["cosmic-term", "-e", "bash", "-c", cmd + "\nexec bash"],
+    lambda cmd: ["gnome-terminal", "--", "bash", "-c", cmd + "\nexec bash"],
+    lambda cmd: ["konsole", "-e", "bash", "-c", cmd + "\nexec bash"],
+    lambda cmd: ["xfce4-terminal", "-e", "bash", "-c", cmd + "\nexec bash"],
+    lambda cmd: ["ptyxis", "--", "bash", "-c", cmd + "\nexec bash"],
+    lambda cmd: ["kgx", "--", "bash", "-c", cmd + "\nexec bash"],
+    lambda cmd: ["foot", "bash", "-c", cmd + "\nexec bash"],
+    lambda cmd: ["wezterm", "start", "--", "bash", "-c", cmd + "\nexec bash"],
+    lambda cmd: ["x-terminal-emulator", "-e", "bash", "-c", cmd + "\nexec bash"],
+    lambda cmd: ["osascript", "-e", 'tell application "Terminal" to activate',
+                 "-e", 'tell application "Terminal" to do script ' + json.dumps(cmd)],
     lambda cmd: ["wt", "cmd", "/k", cmd],
     lambda cmd: ["cmd", "/k", cmd],
 ]
@@ -36,8 +48,8 @@ TERMINAL_BUILDERS = [
 
 def custom_terminal_builder(template):
     def build(cmd):
-        filled = template.replace("%CMD%", cmd)
-        return shlex.split(filled)
+        # Split the template first, then substitute, so spaces/quotes in the command stay one argument.
+        return [part.replace("%CMD%", cmd) for part in shlex.split(template)]
     return build
 
 
@@ -113,7 +125,7 @@ def run_entry(entry, log=None):
             return
         if os.path.isfile(command) and not command.lower().endswith((".desktop", ".exe", ".lnk", ".msi")):
             try:
-                os.chmod(command, 0o755)
+                os.chmod(command, os.stat(command).st_mode | 0o100)  # owner-execute only
             except OSError as e:
                 messagebox.showwarning("Couldn't set executable bit", str(e))
         exec_cmd = program_command(command)
@@ -172,7 +184,7 @@ def run_entry(entry, log=None):
             subprocess.Popen(builder(exec_cmd), cwd=working_dir, env=child_process_env())
             emit(f'  \u2192 Opened in terminal')
             return
-        except FileNotFoundError:
+        except (FileNotFoundError, ValueError):
             continue
 
     emit(f'  \u2717 No terminal found for "{entry_name}"')

@@ -91,7 +91,10 @@ def _read_crontab_lines():
     except OSError:
         return [], False
     if result.returncode != 0:
-        return [], True  # typically "no crontab for <user>" -- fine, empty is correct
+        if "no crontab" in (result.stderr or "").lower():
+            return [], True  # a normal empty starting point
+        # Any other failure: don't pretend the crontab is empty, or writing it back would wipe the user's jobs.
+        return [], False
     return result.stdout.splitlines(), True
 
 
@@ -182,7 +185,7 @@ def set_entry_schedule(entry, enabled):
     body.append(exec_cmd)
     with open(script_path, "w") as f:
         f.write("\n".join(["#!/bin/bash"] + posix_status_wrapper(entry_id, body)) + "\n")
-    os.chmod(script_path, 0o755)
+    os.chmod(script_path, 0o700)
 
     lines, available = _read_crontab_lines()
     if not available:

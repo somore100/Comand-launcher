@@ -16,9 +16,10 @@ from .config import APP_NAME, APP_VERSION, FEEDBACK_RELAY_TOKEN, FEEDBACK_RELAY_
 from .feedback import FeedbackConfig
 from .mcp_server import client_config_snippet
 from .feedback_dialog import FeedbackDialog
-from .data import _load_config, _normalize_vault_data, _save_config, get_data_dir, get_data_file, load_data, save_data, set_data_dir
+from .data import _load_config, strip_persistence, _normalize_vault_data, _save_config, get_data_dir, get_data_file, load_data, save_data, set_data_dir
 from .hotkeys import AllKeybindsDialog, HotkeyRecorderDialog
 from .platform_utils import is_linux
+from .privilege import remove_all_rules
 from .scrollframe import ScrollableBody, fit_dialog
 from .terminals import NAMED_LINUX_TERMINALS, run_entry
 from .theme import COLOR_ACCENT, COLOR_ACCENT_DIM, COLOR_BG, COLOR_PANEL, COLOR_RED, COLOR_SIDEBAR, COLOR_SUBTEXT, COLOR_TEXT, FONT_HEADING, FONT_NORMAL, FONT_SMALL
@@ -244,6 +245,13 @@ class SettingsDialog(tk.Toplevel):
                   ).pack(anchor="w", padx=16, pady=(4, 16))
 
         tk.Frame(body, bg=COLOR_PANEL, height=1).pack(fill="x", padx=16, pady=(0, 14))
+        tk.Label(body, text="Administrator rules", bg=COLOR_BG, fg=COLOR_TEXT, font=FONT_HEADING
+                 ).pack(anchor="w", padx=16, pady=(0, 4))
+        tk.Button(body, text="Remove all passwordless rules", command=self._remove_all_rules, bg=COLOR_PANEL,
+                  fg=COLOR_TEXT, relief="flat", font=FONT_SMALL, padx=10, pady=4
+                  ).pack(anchor="w", padx=16, pady=(0, 16))
+
+        tk.Frame(body, bg=COLOR_PANEL, height=1).pack(fill="x", padx=16, pady=(0, 14))
         tk.Label(body, text="Feedback", bg=COLOR_BG, fg=COLOR_TEXT, font=FONT_HEADING
                  ).pack(anchor="w", padx=16, pady=(0, 4))
         tk.Button(body, text="Leave Feedback", command=self._open_feedback, bg=COLOR_PANEL,
@@ -429,6 +437,23 @@ class SettingsDialog(tk.Toplevel):
         n = len(self.master_app.data.get("commands", []))
         messagebox.showinfo("Vault exported", f"Exported {n} command{'s' if n != 1 else ''} to:\n{path}")
 
+    def _remove_all_rules(self):
+        if not messagebox.askyesno("Remove rules", "Remove every Command Vault 'Don't ask' rule from this "
+                                   "computer? Entries set to that mode will ask for the password again "
+                                   "(you'll be asked for your system password once).", parent=self):
+            return
+        ok, msg = remove_all_rules()
+        if ok:
+            for entry in self.master_app.data.get("commands", []):
+                entry["admin_rule_hash"] = ""
+            save_data(self.master_app.data)
+            cfg = _load_config()
+            cfg.pop("stale_admin_rules", None)
+            _save_config(cfg)
+            messagebox.showinfo("Rules removed", "All Command Vault passwordless rules were removed.", parent=self)
+        else:
+            messagebox.showwarning("Not removed", msg, parent=self)
+
     def _import_vault(self):
         path = filedialog.askopenfilename(title="Import Command Vault",
                                            filetypes=[("JSON files", "*.json"), ("All files", "*.*")])
@@ -450,10 +475,18 @@ class SettingsDialog(tk.Toplevel):
 
         current_n = len(self.master_app.data.get("commands", []))
         new_n = len(imported.get("commands", []))
+        armed = sum(1 for e in imported.get("commands", [])
+                    if e.get("autostart") or e.get("schedule_enabled") or e.get("hotkey_pynput")
+                    or e.get("ai_allowed") or e.get("admin_mode", "off") != "off")
+        strip_persistence(imported)
+        note = (f"\n\n{armed} of them were set to start at login, run on a schedule, use a hotkey, "
+                "be run by AI assistants or run with administrator rights. Those settings are switched "
+                "off on import; turn them on yourself after checking each entry." if armed else "")
         proceed = messagebox.askyesno(
             "Replace current vault?",
             f"This will replace your current vault ({current_n} command{'s' if current_n != 1 else ''}) "
-            f"with the {new_n} command{'s' if new_n != 1 else ''} from:\n{path}\n\n"
+            f"with the {new_n} command{'s' if new_n != 1 else ''} from:\n{path}{note}\n\n"
+            "Only import vaults you trust: entries are commands that run on your computer. "
             "Your current vault will be backed up first. Continue?")
         if not proceed:
             return
@@ -487,37 +520,19 @@ class SettingsDialog(tk.Toplevel):
                 except (NotImplementedError, RuntimeError, OSError):
                     pass
 
+        for old in old_entries:
+            if old.get("admin_mode") == "remember" and old.get("admin_rule_hash"):
+                ok, _msg = remove_rule(old)
+                if not ok:
+                    self.master_app._remember_stale_rule(old)
         self.master_app.data = imported
         self.master_app._refresh_categories()
         self.master_app._refresh_list()
         # hotkey_pynput on each entry is the live source of truth for global
         # hotkeys, so this actually re-registers any imported entries' hotkeys.
         self.master_app._rebuild_hotkey_listener()
-        # autostart's source of truth is an OS-level file per entry, not the
-        # JSON field, so imported entries with autostart=True need that file
-        # (re)created here or they'd show "on" in the UI without actually
-        # running at login on this machine.
-        autostart_failures = 0
-        schedule_failures = 0
+        autostart_failures = schedule_failures = 0
         admin_entries = []
-        for entry in imported.get("commands", []):
-            if entry.get("autostart"):
-                try:
-                    set_entry_autostart(entry, True)
-                except (NotImplementedError, OSError):
-                    autostart_failures += 1
-            # Scheduled runs live in the OS scheduler too, so re-register them here.
-            if entry.get("schedule_enabled"):
-                try:
-                    set_entry_schedule(entry, True)
-                except (NotImplementedError, RuntimeError, OSError):
-                    schedule_failures += 1
-            # A "don't ask" admin rule is installed per machine, so an imported one isn't active here.
-            if entry.get("admin_mode") == "remember":
-                entry["admin_rule_hash"] = ""
-                admin_entries.append(entry)
-        if admin_entries:
-            save_data(imported)
 
         msg = f"Imported {new_n} command{'s' if new_n != 1 else ''}."
         if backup_path:

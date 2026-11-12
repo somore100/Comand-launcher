@@ -25,14 +25,14 @@ from datetime import datetime
 from .config import APP_NAME, APP_VERSION
 from .data import app_config_dir, load_data
 from .execution import is_program_path, program_command, resolve_exec_command
-from .placeholders import extract_placeholders, fill_placeholders
+from .placeholders import PLACEHOLDER_RE, extract_placeholders, fill_placeholders
 from .runstatus import read_run_log_tail, read_run_status
 
 PROTOCOL_VERSION = "2024-11-05"
 MAX_OUTPUT = 16 * 1024
 DEFAULT_TIMEOUT = 60
 MAX_TIMEOUT = 600
-UNSAFE_VALUE_CHARS = set("`$;&|<>(){}\\\"'\n\r\x00")
+UNSAFE_VALUE_CHARS = set("`$;&|<>(){}\\\"'\n\r\x00*?[]~!#%")
 
 TOOLS = [
     {
@@ -103,6 +103,21 @@ def describe_entry(entry):
     }
 
 
+def _always_quoted(command, name):
+    """True when every {{name}} in the command sits directly inside quotes, so
+    spaces in a value stay one argument."""
+    found = False
+    for m in PLACEHOLDER_RE.finditer(command):
+        if m.group(1) != name:
+            continue
+        found = True
+        before = command[:m.start()][-1:]
+        after = command[m.end():][:1]
+        if not (before in ("'", '"') and before == after):
+            return False
+    return found
+
+
 def check_inputs(entry, inputs):
     """Validated {name: value} for the entry's placeholders, or ToolError."""
     inputs = inputs or {}
@@ -117,6 +132,11 @@ def check_inputs(entry, inputs):
     values = {}
     for name, default in wanted:
         value = str(inputs.get(name, default))
+        if value.startswith("-"):
+            raise ToolError(f"The value for '{name}' starts with '-', which a program would read as an option.")
+        if any(c.isspace() for c in value) and not _always_quoted(entry.get("command", ""), name):
+            raise ToolError(f"The value for '{name}' contains spaces, which would split it into several "
+                            f"arguments; use a single word.")
         bad = sorted({c for c in value if c in UNSAFE_VALUE_CHARS})
         if bad:
             raise ToolError(f"The value for '{name}' contains characters that could change what the command "

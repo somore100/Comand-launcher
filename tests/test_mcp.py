@@ -47,7 +47,7 @@ def test_find_entry_by_name_or_id_and_errors():
 
 def test_input_values_cannot_inject_shell_syntax():
     entry = mcp.allowed_entries(_vault())[1]
-    assert mcp.check_inputs(entry, {"who": "Alice B-2"}) == {"who": "Alice B-2"}
+    assert mcp.check_inputs(entry, {"who": "Alice-B2"}) == {"who": "Alice-B2"}
     assert mcp.check_inputs(entry, {}) == {"who": "world"}
     for bad in ("x; rm -rf ~", "$(id)", "`id`", "a && b", "a\nb", 'q"q', "a|b", "a>b"):
         try:

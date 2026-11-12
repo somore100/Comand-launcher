@@ -13,6 +13,7 @@ persistent browser profile ("Test run" shows the browser) and the cookies are
 reused by later runs.
 """
 import json
+import re
 import os
 import shutil
 import subprocess
@@ -342,13 +343,12 @@ def generate_script(entry_id, name, routine):
         s["desc"] = describe_step(step)
         steps.append(s)
     safe_name = name.replace('"', "'").replace("\\", "/").replace("\n", " ")
-    return (_THIN_SCRIPT
-            .replace("__NAME__", safe_name)
-            .replace("__LIB__", repr(lib_dir()))
-            .replace("__STEPS__", repr(json.dumps(steps)))
-            .replace("__KIND__", repr(routine.get("kind", "web")))
-            .replace("__SHOW__", repr(bool(routine.get("show_browser", True))))
-            .replace("__SHOT__", repr(failure_screenshot_path(entry_id))))
+    values = {"__NAME__": safe_name, "__LIB__": repr(lib_dir()), "__STEPS__": repr(json.dumps(steps)),
+              "__KIND__": repr(str(routine.get("kind", "web"))),
+              "__SHOW__": repr(bool(routine.get("show_browser", True))),
+              "__SHOT__": repr(failure_screenshot_path(entry_id))}
+    # One pass, so text inside a step (e.g. "__KIND__") is never substituted again.
+    return re.sub("|".join(values), lambda m: values[m.group(0)], _THIN_SCRIPT)
 
 
 def lib_dir():

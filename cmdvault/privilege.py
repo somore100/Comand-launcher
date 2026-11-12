@@ -153,13 +153,7 @@ def _resolve_binary(name):
     return os.path.abspath(found) if found else None
 
 
-def _user_controlled(path):
-    """The first location along `path` (the file, then each parent) that the
-    current user can write to, or None. A passwordless rule for a file the user
-    can swap out would hand root to anything running as that user."""
-    if hasattr(os, "geteuid") and os.geteuid() == 0:
-        return None
-    p = os.path.realpath(path)
+def _writable_chain(p):
     while True:
         if os.access(p, os.W_OK):
             return p
@@ -167,6 +161,35 @@ def _user_controlled(path):
         if parent == p:
             return None
         p = parent
+
+
+def _user_controlled(path):
+    """The first location along `path` (the file, then each parent) that the
+    current user can write to, or None. Both the path as written (so a symlink
+    that can be repointed is caught) and its resolved target are checked. A
+    passwordless rule for a file the user can swap out would hand root to
+    anything running as that user."""
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        return None
+    lexical = os.path.abspath(path)
+    return _writable_chain(lexical) or _writable_chain(os.path.realpath(path))
+
+
+_SCRIPT_EXT_RE = re.compile(r"\.(sh|bash|zsh|py|pl|rb|js|php|lua|ps1)$", re.IGNORECASE)
+
+
+def _path_like(arg):
+    return "/" in arg or arg.startswith("~") or bool(_SCRIPT_EXT_RE.search(arg)) or os.path.exists(arg)
+
+
+def _real_account(name):
+    """True when `name` is an existing local account (so 'ALL' and friends are refused)."""
+    try:
+        import pwd
+        pwd.getpwnam(name)
+        return True
+    except (ImportError, KeyError):
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -187,6 +210,13 @@ def build_rule_specs(calls):
         if not binary:
             problems.append(f"Can't find the command '{argv[0]}' to allow.")
             continue
+        if any(c in _BAD_ARG_CHARS or c == "~" for c in binary):
+            problems.append(f"The command path '{binary}' has wildcard or special characters, which can't be "
+                            f"allowed safely. Choose 'Ask each time'.")
+            continue
+        if run_as != "root" and not _real_account(run_as):
+            problems.append(f"'{run_as}' is not an existing account, so it can't be used with sudo -u.")
+            continue
         args = argv[1:]
         bad = next((a for a in args if any(c in _BAD_ARG_CHARS for c in a)), None)
         if bad is not None:
@@ -194,7 +224,14 @@ def build_rule_specs(calls):
                 f"Argument '{bad}' has characters that can't be matched exactly in a sudoers rule "
                 f"(wildcards, quotes, $ ...). Use a plain command, or choose 'Ask each time'.")
             continue
-        for path in [binary] + [a for a in args if os.path.exists(a)]:
+        loose = next((a for a in args if not a.startswith("-") and _path_like(a)
+                      and not (os.path.isabs(a) and os.path.exists(a))), None)
+        if loose is not None:
+            problems.append(f"'{loose}' looks like a file but isn't a full path to a file that exists "
+                            f"(a relative or missing path could later point at something else). Use full "
+                            f"paths, or choose 'Ask each time'.")
+            continue
+        for path in [binary] + [a for a in args if os.path.isabs(a) and os.path.exists(a)]:
             writable = _user_controlled(path)
             if writable:
                 problems.append(
@@ -381,6 +418,13 @@ def remove_rule(entry):
         return _windows_remove(entry)
     dst = os.path.join(SUDOERS_DIR, rule_filename(entry["id"]))
     return _run_elevated(_remove_script(dst))
+
+
+def remove_all_rules():
+    """Deletes every Command Vault sudoers rule (one password prompt). Linux/macOS only."""
+    if is_windows():
+        return False, "Remove the CommandVault-Admin-* tasks in Task Scheduler (they are listed there)."
+    return _run_elevated(f"rm -f {shlex.quote(SUDOERS_DIR)}/command-vault-*")
 
 
 def command_allowed(run_as, argv):

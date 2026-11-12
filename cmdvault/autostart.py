@@ -132,7 +132,7 @@ def set_app_autostart(enabled):
             lines.append(app_relaunch_command())
         with open(script_path, "w") as f:
             f.write("\n".join(lines) + "\n")
-        os.chmod(script_path, 0o755)
+        os.chmod(script_path, 0o700)
 
         content = (
             "[Desktop Entry]\n"
@@ -148,7 +148,7 @@ def set_app_autostart(enabled):
         script_path = app_autostart_script_path()
         with open(script_path, "w") as f:
             f.write("#!/bin/bash\nsleep 3\n" + app_relaunch_command() + "\n")
-        os.chmod(script_path, 0o755)
+        os.chmod(script_path, 0o700)
         write_launch_agent(path, "com.commandvault.app", script_path)
     elif is_windows():
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -227,7 +227,7 @@ def set_entry_autostart(entry, enabled):
         lines.append(apply_admin(entry, exec_cmd, silent=True, unattended=True))
         with open(script_path, "w") as f:
             f.write("\n".join(lines) + "\n")
-        os.chmod(script_path, 0o755)
+        os.chmod(script_path, 0o700)
 
         if is_mac():
             write_launch_agent(path, f"com.commandvault.entry.{_safe_label_id(entry['id'])}", script_path)

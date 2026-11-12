@@ -1,6 +1,7 @@
 """data -- split out of the former monolithic main.py."""
 from datetime import datetime
 import json
+import re
 from tkinter import messagebox
 import os
 import shutil
@@ -51,9 +52,20 @@ def _load_config():
 
 
 def _save_config(cfg):
+    """Atomic (temp file + os.replace): config.json is written from background
+    threads too, and a torn write would reset the data folder to the default."""
     os.makedirs(app_config_dir(), exist_ok=True)
-    with open(app_config_file(), "w") as f:
-        json.dump(cfg, f, indent=4)
+    fd, tmp = tempfile.mkstemp(prefix=".config-", suffix=".tmp", dir=app_config_dir())
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(cfg, f, indent=4)
+        os.replace(tmp, app_config_file())
+    except OSError:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -110,6 +122,24 @@ def set_data_dir(new_dir, move_existing=True):
 
 # Data layer
 # ---------------------------------------------------------------------------
+SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+_TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+
+
+def valid_schedule_time(value):
+    return value == "" or (isinstance(value, str) and bool(_TIME_RE.match(value)))
+
+
+def strip_persistence(data):
+    """For vaults that came from someone else (Import): switch off everything that would
+    run or arm on its own -- startup, schedules, hotkeys, AI access, admin rules and
+    custom browser-profile folders -- so nothing starts without the user turning it on."""
+    for cmd in data.get("commands", []):
+        cmd.update(autostart=False, schedule_enabled=False, hotkey_display="", hotkey_pynput="",
+                   ai_allowed=False, admin_mode="off", admin_rule_hash="", browser_profile_dir="")
+    return data
+
+
 def _normalize_vault_data(raw):
     """Shared normalization for a parsed commands.json payload: migrates the
     old flat-list format and fills in defaults for any fields added since
@@ -127,10 +157,27 @@ def _normalize_vault_data(raw):
             commands.append(_blank_entry(name, command))
         return {"categories": sorted(categories), "commands": commands, "settings": {}}
 
+    if not isinstance(raw, dict):
+        return {"categories": [], "commands": [], "settings": {}}
     raw.setdefault("categories", [])
     raw.setdefault("commands", [])
     raw.setdefault("settings", {})
+    if not isinstance(raw["commands"], list):
+        raw["commands"] = []
+    raw["commands"] = [c for c in raw["commands"] if isinstance(c, dict)]
+    seen_ids = set()
     for cmd in raw["commands"]:
+        # Ids end up in file names, cron lines and folder paths, so only plain ones are accepted.
+        entry_id = cmd.get("id")
+        if not isinstance(entry_id, str) or not SAFE_ID_RE.match(entry_id) or entry_id in seen_ids:
+            cmd["id"] = str(uuid.uuid4())
+        seen_ids.add(cmd["id"])
+        for key in ("name", "command"):
+            if not isinstance(cmd.get(key), str):
+                cmd[key] = "" if cmd.get(key) is None else str(cmd[key])
+        if not valid_schedule_time(cmd.get("schedule_time", "")):
+            cmd["schedule_time"] = ""
+            cmd["schedule_enabled"] = False
         cmd.setdefault("working_dir", "")
         cmd.setdefault("run_mode", "terminal")
         cmd.setdefault("entry_type", "command")
@@ -205,7 +252,12 @@ def load_data():
             pass  # no Tk root yet (e.g. called before mainloop is set up)
 
         if recovered is not None:
-            return _normalize_vault_data(recovered)
+            recovered = _normalize_vault_data(recovered)
+            try:
+                save_data(recovered)  # write it back, or the next launch would find no vault
+            except OSError:
+                pass
+            return recovered
         return {"categories": [], "commands": [], "settings": {}}
 
     return _normalize_vault_data(raw)

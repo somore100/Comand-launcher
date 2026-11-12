@@ -33,7 +33,7 @@ def resolve_exec_command(command):
 
     # Unknown extension but a real file: try to make it executable and run directly
     try:
-        os.chmod(stripped, 0o755)
+        os.chmod(stripped, os.stat(stripped).st_mode | 0o100)  # owner-execute only
     except OSError:
         pass
     return f'"{stripped}"'

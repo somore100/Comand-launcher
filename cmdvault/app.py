@@ -2,6 +2,7 @@
 from datetime import datetime
 from tkinter import messagebox
 import os
+import sys
 import queue
 import shutil
 import subprocess
@@ -404,18 +405,22 @@ class CommandVault(tk.Tk):
 
     def _drain_log_queue(self):
         try:
+            try:
+                while True:
+                    self._append_console(self._log_queue.get_nowait())
+            except queue.Empty:
+                pass
             while True:
-                message = self._log_queue.get_nowait()
-                self._append_console(message)
-        except queue.Empty:
-            pass
-        try:
-            while True:
-                fn = self._main_thread_queue.get_nowait()
-                fn()
-        except queue.Empty:
-            pass
-        self.after(150, self._drain_log_queue)
+                try:
+                    fn = self._main_thread_queue.get_nowait()
+                except queue.Empty:
+                    break
+                try:
+                    fn()
+                except Exception as e:  # noqa: BLE001 - one bad callback must not stop the loop
+                    print(f"Command Vault: callback failed: {e}", file=sys.stderr)
+        finally:
+            self.after(150, self._drain_log_queue)
 
     def _append_console(self, message):
         timestamp = datetime.now().strftime("%H:%M:%S")
@@ -645,6 +650,12 @@ class CommandVault(tk.Tk):
             digest = rule_hash(plan["text"])
             if digest == entry.get("admin_rule_hash"):
                 return
+            if not is_windows() and not messagebox.askokcancel(
+                    "Allow without a password?",
+                    "This lets any program running as you run these commands as root WITHOUT a password:\n\n"
+                    + "\n".join(f"  {run_as}: {spec}" for run_as, spec in plan["specs"])
+                    + "\n\nYou'll be asked for your system password once to install the rule. Continue?"):
+                return
             ok, msg = install_rule(entry, plan)
             if ok:
                 entry["admin_rule_hash"] = digest
@@ -661,6 +672,13 @@ class CommandVault(tk.Tk):
                 save_data(self.data)
             else:
                 messagebox.showwarning("Administrator rights", f"Couldn't remove the old rule:\n\n{msg}")
+
+    def _remember_stale_rule(self, entry):
+        cfg = _load_config()
+        stale = cfg.setdefault("stale_admin_rules", [])
+        if entry.get("id") not in stale:
+            stale.append(entry.get("id"))
+        _save_config(cfg)
 
     def _add_entry(self):
         dialog = EntryDialog(self, self._known_categories())
@@ -733,7 +751,13 @@ class CommandVault(tk.Tk):
                         pass
             if entry.get("admin_rule_hash"):
                 entry["admin_mode"] = "off"
-                remove_rule(entry)
+                ok, msg = remove_rule(entry)
+                if not ok:
+                    self._remember_stale_rule(entry)
+                    messagebox.showwarning(
+                        "Administrator rights",
+                        f"The passwordless rule for '{entry['name']}' is still installed ({msg}).\n\n"
+                        "Remove it later with Settings > \"Remove all passwordless rules\".")
             try:
                 set_entry_autostart(entry, False)
             except NotImplementedError:
