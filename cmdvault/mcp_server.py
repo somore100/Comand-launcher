@@ -25,7 +25,7 @@ from datetime import datetime
 from .config import APP_NAME, APP_VERSION
 from .data import app_config_dir, load_data
 from .execution import is_program_path, program_command, resolve_exec_command
-from .placeholders import PLACEHOLDER_RE, extract_placeholders, fill_placeholders
+from .placeholders import PLACEHOLDER_RE, extract_placeholders, fill_placeholders, placeholder_labels
 from .runstatus import read_run_log_tail, read_run_status
 
 PROTOCOL_VERSION = "2024-11-05"
@@ -93,12 +93,13 @@ def find_entry(entries, ref):
 
 def describe_entry(entry):
     inputs = extract_placeholders(entry.get("command", "")) if entry.get("entry_type") != "routine" else []
+    labels = placeholder_labels(entry.get("command", ""))
     return {
         "id": entry["id"],
         "name": entry["name"],
         "category": entry.get("category", ""),
         "type": entry.get("entry_type", "command"),
-        "inputs": [{"name": n, "default": d} for n, d in inputs],
+        "inputs": [{"name": n, "default": d, "label": labels.get(n, "")} for n, d in inputs],
         "scheduled": bool(entry.get("schedule_enabled")),
     }
 

@@ -9,7 +9,7 @@ from .browser import prefix_exec_cmd
 from .data import _load_config
 from .execution import is_program_path, program_command, resolve_exec_command
 from .privilege import ADMIN_REMEMBER, apply_admin, command_allowed, find_sudo_calls
-from .placeholders import PlaceholderDialog, extract_placeholders, fill_placeholders
+from .placeholders import PlaceholderDialog, extract_placeholders, fill_placeholders, placeholder_labels
 
 
 # Terminal selection: auto-detect, or a user-chosen/custom preference
@@ -112,7 +112,7 @@ def run_entry(entry, log=None):
     if entry_type != "appimage":
         placeholders = extract_placeholders(command)
         if placeholders:
-            dialog = PlaceholderDialog(entry_name, placeholders)
+            dialog = PlaceholderDialog(entry_name, placeholders, command=command, labels=placeholder_labels(command))
             dialog.wait_window()
             if dialog.result is None:
                 emit(f'Cancelled "{entry_name}" (values not filled in)')

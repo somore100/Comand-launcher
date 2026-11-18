@@ -148,6 +148,14 @@ class InsertPlaceholderDialog(tk.Toplevel):
         name_entry.pack(fill="x", padx=16, pady=(2, 8))
         name_entry.bind("<Return>", lambda e: self._confirm())
 
+        tk.Label(self, text="Question shown when you run it (optional), e.g. Which folder to back up?",
+                 bg=COLOR_BG, fg=COLOR_SUBTEXT, font=FONT_SMALL, anchor="w").pack(fill="x", padx=16)
+        self.label_var = tk.StringVar()
+        label_entry = tk.Entry(self, textvariable=self.label_var, width=32, font=FONT_NORMAL, bg=COLOR_PANEL,
+                               fg=COLOR_TEXT, insertbackground=COLOR_TEXT, relief="flat")
+        label_entry.pack(fill="x", padx=16, pady=(2, 8))
+        label_entry.bind("<Return>", lambda e: self._confirm())
+
         tk.Label(self, text="Default value (optional)", bg=COLOR_BG, fg=COLOR_SUBTEXT, font=FONT_SMALL,
                   anchor="w").pack(fill="x", padx=16)
         self.default_var = tk.StringVar()
@@ -171,7 +179,11 @@ class InsertPlaceholderDialog(tk.Toplevel):
         if not re.fullmatch(r"\w+", name or ""):
             messagebox.showwarning("Invalid name", "Use letters, numbers, and underscores only (no spaces).")
             return
-        self.result = (name, self.default_var.get().strip())
+        bad = [c for c in "{}|" if c in self.label_var.get() or c in self.default_var.get()]
+        if bad:
+            messagebox.showwarning("Invalid text", "The question and default can't contain { } or |.")
+            return
+        self.result = (name, self.default_var.get().strip(), self.label_var.get().strip())
         self.destroy()
 
 
@@ -619,8 +631,8 @@ class EntryDialog(tk.Toplevel):
         self.wait_window(dialog)
         if not dialog.result:
             return
-        name, default = dialog.result
-        token = "{{" + name + "}}" if not default else "{{" + name + ":" + default + "}}"
+        name, default, label = dialog.result
+        token = "{{" + name + (":" + default if default else "") + ("|" + label if label else "") + "}}"
         self.command_text.insert(tk.INSERT, token)
         self.command_text.focus_set()
 

@@ -127,3 +127,13 @@ def test_scheduled_program_entries_use_program_command(monkeypatch):
     from cmdvault import scheduling
     monkeypatch.setattr(scheduling, "program_command", lambda p: "PROGRAM " + p)
     assert scheduling._exec_for({"entry_type": "appimage", "command": "/x.desktop"}) == "PROGRAM /x.desktop"
+
+
+def test_placeholder_labels_and_defaults():
+    from cmdvault import placeholders as ph
+    cmd = "backup {{src:/home/me|Which folder to back up?}} {{dest}} {{mode|Mode}} {{src}}"
+    assert ph.extract_placeholders(cmd) == [("src", "/home/me"), ("dest", ""), ("mode", "")]
+    assert ph.placeholder_labels(cmd) == {"src": "Which folder to back up?", "mode": "Mode"}
+    assert ph.fill_placeholders(cmd, {"src": "A", "dest": "B", "mode": "C"}) == "backup A B C A"
+    # old syntax still works
+    assert ph.extract_placeholders("echo {{who:world}}") == [("who", "world")]
