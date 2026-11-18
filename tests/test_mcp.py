@@ -30,7 +30,7 @@ def test_only_opted_in_non_admin_entries_are_exposed():
     assert names == ["Hello", "Greet"]
     listing = mcp.call_tool("list_entries", {}, _vault())["entries"]
     assert [e["name"] for e in listing] == ["Hello", "Greet"]
-    assert listing[1]["inputs"] == [{"name": "who", "default": "world"}]
+    assert listing[1]["inputs"] == [{"name": "who", "default": "world", "label": ""}]
 
 
 def test_find_entry_by_name_or_id_and_errors():
