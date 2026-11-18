@@ -99,3 +99,31 @@ def test_routine_script_does_not_substitute_inside_steps():
     src = rt.generate_script("e1", "name", routine)
     compile(src, "routine.py", "exec")
     assert "__KIND__" in src  # still just text inside the JSON string
+
+
+def test_quote_path_keeps_plain_paths_and_quotes_dangerous_ones(monkeypatch):
+    from cmdvault import execution as ex
+    monkeypatch.setattr(ex, "is_windows", lambda: False)
+    assert ex.quote_path("/home/u/my script.sh") == '"/home/u/my script.sh"'
+    quoted = ex.quote_path("/tmp/$(touch INJECTED).sh")
+    assert quoted.startswith("'") and "$(touch INJECTED)" in quoted
+    import shlex
+    assert shlex.split(quoted) == ["/tmp/$(touch INJECTED).sh"]
+
+
+def test_windows_remember_refuses_scripts_in_the_users_folders(monkeypatch, tmp_path):
+    script = tmp_path / "up.bat"
+    script.write_text("echo hi")
+    monkeypatch.setattr(os.path, "expanduser", lambda p: str(tmp_path) if p == "~" else p)
+    plan = cv_priv._windows_plan({"id": "e", "command": f'"{script}"'})
+    assert plan["problems"] and plan["specs"] == []
+
+
+def test_powershell_quote_doubles_apostrophes():
+    assert cv_priv._ps("C:\\Users\\O'Brien") == "C:\\Users\\O''Brien"
+
+
+def test_scheduled_program_entries_use_program_command(monkeypatch):
+    from cmdvault import scheduling
+    monkeypatch.setattr(scheduling, "program_command", lambda p: "PROGRAM " + p)
+    assert scheduling._exec_for({"entry_type": "appimage", "command": "/x.desktop"}) == "PROGRAM /x.desktop"

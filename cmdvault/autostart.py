@@ -4,7 +4,7 @@ import plistlib
 import re
 import sys
 from .browser import browser_env_line
-from .execution import program_command, resolve_exec_command
+from .execution import program_command, quote_path, resolve_exec_command
 from .privilege import apply_admin
 from .platform_utils import is_linux, is_mac, is_windows
 
@@ -126,8 +126,8 @@ def set_app_autostart(enabled):
         script_path = app_autostart_script_path()
         lines = ["#!/bin/bash", "sleep 3"]
         if appimage_path:
-            lines.append(f'chmod +x "{appimage_path}" 2>/dev/null || true')
-            lines.append(f'"{appimage_path}" --appimage-extract-and-run')
+            lines.append(f'chmod +x {quote_path(appimage_path)} 2>/dev/null || true')
+            lines.append(f'{quote_path(appimage_path)} --appimage-extract-and-run')
         else:
             lines.append(app_relaunch_command())
         with open(script_path, "w") as f:
@@ -206,7 +206,7 @@ def set_entry_autostart(entry, enabled):
         # own startup and can silently fail to mount via FUSE. Extract-and-
         # run avoids that; chmod +x guards against a lost executable bit
         # (e.g. after re-downloading or moving the file).
-        exec_cmd = f'chmod +x "{command}" 2>/dev/null || true\n"{command}" --appimage-extract-and-run'
+        exec_cmd = f'chmod +x {quote_path(command)} 2>/dev/null || true\n{quote_path(command)} --appimage-extract-and-run'
     elif is_program_entry:
         exec_cmd = program_command(command)
     else:
@@ -220,7 +220,7 @@ def set_entry_autostart(entry, enabled):
         script_path = os.path.join(autostart_scripts_dir(), f"cv-{entry['id']}.sh")
         lines = ["#!/bin/bash", "sleep 3"]
         if working_dir:
-            lines.append(f'cd "{working_dir}" || exit 1')
+            lines.append(f'cd {quote_path(working_dir)} || exit 1')
         env_line = browser_env_line(entry)
         if env_line:
             lines.append(env_line)

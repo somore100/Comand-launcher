@@ -208,6 +208,8 @@ class CommandVault(tk.Tk):
 
     @staticmethod
     def _open_url(url):
+        if not str(url).startswith(("https://github.com/", "https://www.github.com/")):
+            return  # only ever open real GitHub release pages
         try:
             if is_windows():
                 os.startfile(url)
@@ -349,7 +351,7 @@ class CommandVault(tk.Tk):
         self.tree.configure(yscrollcommand=scrollbar.set)
         scrollbar.pack(side="right", fill="y")
         self.tree.pack(side="left", fill="both", expand=True)
-        self.tree.bind("<Double-1>", lambda e: self._run_selected())
+        self.tree.bind("<Double-1>", self._on_double_click)
 
         self.tree.tag_configure("odd", background=COLOR_PANEL)
         self.tree.tag_configure("even", background=COLOR_ROW_ALT)
@@ -672,6 +674,11 @@ class CommandVault(tk.Tk):
                 save_data(self.data)
             else:
                 messagebox.showwarning("Administrator rights", f"Couldn't remove the old rule:\n\n{msg}")
+
+    def _on_double_click(self, event):
+        # Only a double-click on an actual row runs it, not on the column headers or empty space.
+        if self.tree.identify_region(event.x, event.y) == "cell" and self.tree.identify_row(event.y):
+            self._run_selected()
 
     def _remember_stale_rule(self, entry):
         cfg = _load_config()

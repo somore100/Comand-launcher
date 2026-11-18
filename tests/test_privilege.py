@@ -58,6 +58,7 @@ def test_build_rule_specs_rejects_wildcards_and_quotes(monkeypatch):
         assert specs == [] and problems
 
 
+@pytest.mark.skipif(os.name == "nt", reason="sudo rules are Linux/macOS only")
 def test_build_rule_specs_rejects_user_writable_files(monkeypatch, tmp_path):
     script = tmp_path / "evil.sh"
     script.write_text("echo hi\n")
@@ -93,11 +94,13 @@ def test_entry_sudo_text_includes_script_contents(tmp_path):
     assert cv_priv.entry_sudo_text("echo hi") == "echo hi"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="sudo rules are Linux/macOS only")
 def test_plan_admin_no_sudo_is_a_problem():
     plan = cv_priv.plan_admin({"command": "echo hi"})
     assert plan["problems"] and plan["specs"] == []
 
 
+@pytest.mark.skipif(os.name == "nt", reason="sudo rules are Linux/macOS only")
 def test_admin_prefix_modes(monkeypatch, tmp_path):
     monkeypatch.setattr(cv_priv, "supports_admin", lambda: True)
     monkeypatch.setattr(cv_priv, "ensure_askpass", lambda: "/tmp/askpass.sh")

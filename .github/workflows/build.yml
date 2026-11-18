@@ -6,6 +6,9 @@ on:
       - "v*"
   workflow_dispatch: {}
 
+permissions:
+  contents: read
+
 jobs:
   build-linux-appimage:
     runs-on: ubuntu-latest
@@ -159,11 +162,23 @@ jobs:
         with:
           path: artifacts
 
+      - name: Collect files and write checksums
+        run: |
+          mkdir release
+          cp artifacts/CommandVault-Linux-AppImage/CommandVault-x86_64.AppImage release/
+          cp artifacts/CommandVault-Linux-packages/* release/
+          cp artifacts/CommandVault-Windows-exe/CommandVault.exe release/
+          cp artifacts/CommandVault-macOS-dmg/CommandVault-macOS.dmg release/
+          cd release && sha256sum * > SHA256SUMS && cat SHA256SUMS
+
+      # Uses the preinstalled GitHub CLI instead of a third-party action, so no outside code
+      # runs with write access to the repository.
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            artifacts/CommandVault-Linux-AppImage/CommandVault-x86_64.AppImage
-            artifacts/CommandVault-Linux-packages/*
-            artifacts/CommandVault-Windows-exe/CommandVault.exe
-            artifacts/CommandVault-macOS-dmg/CommandVault-macOS.dmg
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" release/* --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$GITHUB_REF_NAME" release/* --generate-notes --title "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY"
+          fi

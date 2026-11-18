@@ -47,8 +47,11 @@ def _lock_file_exclusive(f):
     if is_windows():
         import msvcrt
         try:
-            f.seek(0)
+            # Lock a byte far past the data, so the {port, token} text at the start of the file stays
+            # readable by the second launch (a locked region can't be read by other processes).
+            f.seek(1 << 20)
             msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+            f.seek(0)
             return True
         except OSError:
             return False
@@ -138,6 +141,7 @@ def acquire_single_instance_lock(on_show):
             except OSError:
                 return  # socket was closed (app shutting down)
             try:
+                conn.settimeout(2)  # an idle local connection must not stall the listener
                 data = conn.recv(256)
             except OSError:
                 data = b""

@@ -31,3 +31,5 @@ Thumbs.db
 *.tar.gz
 CLAUDE.md
 claude.md
+.venv-test/
+.pytest_cache/

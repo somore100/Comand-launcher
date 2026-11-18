@@ -14,6 +14,12 @@ def root(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("APPDATA", str(tmp_path))
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    # A real message box would block forever on a CI machine with nobody to click it.
+    from tkinter import messagebox
+    for name in ("showinfo", "showwarning", "showerror"):
+        monkeypatch.setattr(messagebox, name, lambda *a, **k: "ok")
+    for name in ("askyesno", "askokcancel", "askretrycancel"):
+        monkeypatch.setattr(messagebox, name, lambda *a, **k: False)
     try:
         r = tk.Tk()
     except tk.TclError:

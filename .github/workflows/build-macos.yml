@@ -11,6 +11,9 @@ on:
       - "v*.*.*"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build-macos:
     name: macOS (${{ matrix.arch }})

@@ -152,3 +152,12 @@ Issues and pull requests are welcome — especially around packaging for additio
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+## Running the tests locally
+
+```bash
+scripts/run_tests.sh          # Linux/macOS: creates .venv-test once, syntax check, then pytest
+scripts/run_tests.sh -k mcp   # extra arguments go to pytest
+```
+
+On Windows run `scripts\run_tests.bat`. GUI smoke tests need a display; on a headless Linux box install `xvfb` and the script uses it automatically.

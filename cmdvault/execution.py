@@ -1,10 +1,20 @@
 """execution -- split out of the former monolithic main.py."""
 import os
+import shlex
 from .platform_utils import is_linux, is_mac, is_windows
 
 
 # Script/command resolution
 # ---------------------------------------------------------------------------
+def quote_path(path):
+    """A path for use inside a shell command. Keeps the familiar "double quoted" form, but on
+    Linux/macOS switches to real shell quoting when the path holds $, backticks, quotes or
+    backslashes, which would otherwise be expanded or run by the shell."""
+    if not is_windows() and any(c in path for c in '$`"\\\n!'):
+        return shlex.quote(path)
+    return '"' + path + '"'
+
+
 SCRIPT_EXTENSIONS = (".sh", ".bash", ".bat", ".cmd", ".ps1", ".py")
 
 
@@ -20,23 +30,23 @@ def resolve_exec_command(command):
     ext = os.path.splitext(stripped)[1].lower()
 
     if ext in (".sh", ".bash"):
-        return f'bash "{stripped}"'
+        return f'bash {quote_path(stripped)}'
     if ext in (".bat", ".cmd"):
         # cmd.exe runs .bat/.cmd natively; on Linux this just won't find an
         # interpreter, which is expected since batch files are Windows-only
-        return f'"{stripped}"'
+        return quote_path(stripped)
     if ext == ".ps1":
-        return f'powershell -ExecutionPolicy Bypass -File "{stripped}"'
+        return f'powershell -ExecutionPolicy Bypass -File {quote_path(stripped)}'
     if ext == ".py":
         py = "python" if is_windows() else "python3"
-        return f'{py} "{stripped}"'
+        return f'{py} {quote_path(stripped)}'
 
     # Unknown extension but a real file: try to make it executable and run directly
     try:
         os.chmod(stripped, os.stat(stripped).st_mode | 0o100)  # owner-execute only
     except OSError:
         pass
-    return f'"{stripped}"'
+    return quote_path(stripped)
 
 
 
@@ -80,9 +90,9 @@ def program_command(path):
     path = path.strip()
     low = path.lower()
     if is_mac() and low.endswith(".app"):
-        return f'open "{path}"'
+        return f'open {quote_path(path)}'
     if is_windows() and low.endswith((".lnk", ".url", ".msi")):
-        return f'start "" "{path}"'
+        return f'start "" {quote_path(path)}'
     if is_linux() and low.endswith(".desktop"):
-        return f'gio launch "{path}"'
-    return f'"{path}"'
+        return f'gio launch {quote_path(path)}'
+    return quote_path(path)

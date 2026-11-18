@@ -678,7 +678,7 @@ def test_bulk_build_entries_sets_fields_and_workdir(bot_tree):
     rows = cv_bulk.parse_bulk_lines(f"{bot_tree}/alpha/run.sh\necho hi")
     es = cv_bulk.build_entries(rows, "Bots", "silent", True)
     assert [e["category"] for e in es] == ["Bots", "Bots"] and {e["run_mode"] for e in es} == {"silent"}
-    assert es[0]["working_dir"] == str(bot_tree / "alpha") and es[1]["working_dir"] == ""
+    assert os.path.normpath(es[0]["working_dir"]) == os.path.normpath(str(bot_tree / "alpha")) and es[1]["working_dir"] == ""
     assert len({e["id"] for e in es}) == 2
     assert cv_bulk.build_entries(rows, "Bots", "silent", False)[0]["working_dir"] == ""
 

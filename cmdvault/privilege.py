@@ -292,6 +292,35 @@ def win_bat_path(entry_id):
     return os.path.join(win_admin_dir(), _safe_id(entry_id) + ".bat")
 
 
+def entry_sudo_text_windows(command):
+    return command or ""
+
+
+def _ps(text):
+    """Escapes text for a PowerShell single-quoted string."""
+    return str(text).replace("'", "''")
+
+
+def _user_owned_files(command):
+    """Existing files named in `command` that sit in the user's own folders (profile, temp). An
+    elevated task running one of those would let anything running as the user edit it and gain
+    admin rights without a prompt."""
+    roots = [os.path.normcase(os.path.abspath(r)) for r in
+             (os.path.expanduser("~"), os.environ.get("TEMP", ""), os.environ.get("TMP", "")) if r]
+    try:
+        tokens = shlex.split(command, posix=False)
+    except ValueError:
+        tokens = command.split()
+    found = []
+    for tok in tokens:
+        tok = tok.strip('"\'')
+        if tok and os.path.isfile(tok):
+            full = os.path.normcase(os.path.abspath(tok))
+            if any(full == r or full.startswith(r + os.sep) for r in roots):
+                found.append(tok)
+    return found
+
+
 def _windows_plan(entry):
     from .execution import resolve_exec_command
     command = entry.get("command", "")
@@ -300,6 +329,10 @@ def _windows_plan(entry):
         problems.append("{{placeholders}} can't be used with 'Don't ask': the approved command must be fixed.")
     if not command.strip():
         problems.append("There is no command to allow.")
+    for path in _user_owned_files(entry_sudo_text_windows(command)):
+        problems.append(f"'{path}' is in your own folders, so anything running as you could edit it and "
+                        f"gain administrator rights without a prompt. Move it to a folder only administrators "
+                        f"can write to (e.g. C:\\Program Files), or choose 'Ask each time'.")
     lines = ["@echo off"]
     if entry.get("working_dir"):
         lines.append(f'cd /d "{entry["working_dir"]}"')
@@ -316,7 +349,7 @@ def _run_elevated_powershell(ps_body):
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(ps_body)
     launcher = (f"$p = Start-Process powershell -Verb RunAs -Wait -PassThru -ArgumentList "
-                f"'-NoProfile','-ExecutionPolicy','Bypass','-File','{path}'; exit $p.ExitCode")
+                f"'-NoProfile','-ExecutionPolicy','Bypass','-File','{_ps(path)}'; exit $p.ExitCode")
     try:
         res = subprocess.run(["powershell", "-NoProfile", "-Command", launcher], capture_output=True,
                              text=True, timeout=180)
@@ -341,9 +374,9 @@ def _windows_install(entry, plan):
         f.write(plan["text"])
     dst, task = win_bat_path(entry["id"]), win_task_name(entry["id"])
     ps = (f"$ErrorActionPreference = 'Stop'\n"
-          f"New-Item -ItemType Directory -Force -Path '{win_admin_dir()}' | Out-Null\n"
-          f"Copy-Item -Force '{tmp_bat}' '{dst}'\n"
-          f"schtasks /create /tn '{task}' /tr ('\"' + '{dst}' + '\"') /sc ONCE /st 00:00 /rl HIGHEST /f | Out-Null\n"
+          f"New-Item -ItemType Directory -Force -Path '{_ps(win_admin_dir())}' | Out-Null\n"
+          f"Copy-Item -Force '{_ps(tmp_bat)}' '{_ps(dst)}'\n"
+          f"schtasks /create /tn '{_ps(task)}' /tr ('\"' + '{_ps(dst)}' + '\"') /sc ONCE /st 00:00 /rl HIGHEST /f | Out-Null\n"
           f"exit $LASTEXITCODE\n")
     try:
         return _run_elevated_powershell(ps)
@@ -356,8 +389,8 @@ def _windows_install(entry, plan):
 
 def _windows_remove(entry):
     task, dst = win_task_name(entry["id"]), win_bat_path(entry["id"])
-    ps = (f"schtasks /delete /tn '{task}' /f | Out-Null\n"
-          f"Remove-Item -Force -ErrorAction SilentlyContinue '{dst}'\nexit 0\n")
+    ps = (f"schtasks /delete /tn '{_ps(task)}' /f | Out-Null\n"
+          f"Remove-Item -Force -ErrorAction SilentlyContinue '{_ps(dst)}'\nexit 0\n")
     return _run_elevated_powershell(ps)
 
 
@@ -508,7 +541,7 @@ def _windows_apply(entry, exec_cmd, unattended):
         bat = os.path.join(d, _safe_id(entry["id"]) + ".bat")
         with open(bat, "w", encoding="utf-8", newline="") as f:
             f.write("@echo off\r\n" + exec_cmd + "\r\npause\r\n")
-        return f'powershell -NoProfile -Command "Start-Process -Verb RunAs -FilePath \'{bat}\'"'
+        return f'powershell -NoProfile -Command "Start-Process -Verb RunAs -FilePath \'{_ps(bat)}\'"'
     return exec_cmd
 
 

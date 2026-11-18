@@ -2,7 +2,14 @@
 import os
 import subprocess
 from .browser import browser_env_line
-from .execution import resolve_exec_command
+from .execution import program_command, quote_path, resolve_exec_command
+
+
+def _exec_for(entry):
+    """Program entries (.desktop, .lnk, .app...) need their own launch command, not script resolution."""
+    if entry.get("entry_type") == "appimage":
+        return program_command(entry["command"])
+    return resolve_exec_command(entry["command"])
 from .platform_utils import is_windows
 from .privilege import apply_admin
 from .runstatus import clear_run_status, posix_status_wrapper, windows_status_wrapper
@@ -142,7 +149,7 @@ def set_entry_schedule(entry, enabled):
             clear_run_status(entry_id)
             return
 
-        exec_cmd = resolve_exec_command(entry["command"])
+        exec_cmd = _exec_for(entry)
         working_dir = entry.get("working_dir") or ""
         body = []
         if working_dir:
@@ -174,11 +181,11 @@ def set_entry_schedule(entry, enabled):
             _write_crontab_lines(new_lines)
         return
 
-    exec_cmd = apply_admin(entry, resolve_exec_command(entry["command"]), silent=True, unattended=True)
+    exec_cmd = apply_admin(entry, _exec_for(entry), silent=True, unattended=True)
     working_dir = entry.get("working_dir") or ""
     body = []
     if working_dir:
-        body.append(f'cd "{working_dir}" || exit 1')
+        body.append(f'cd {quote_path(working_dir)} || exit 1')
     env_line = browser_env_line(entry)
     if env_line:
         body.append(env_line)

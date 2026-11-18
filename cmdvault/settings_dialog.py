@@ -386,6 +386,10 @@ class SettingsDialog(tk.Toplevel):
 
     def _test_terminal(self):
         pref, template = self._current_terminal_pref()
+        if pref == "custom" and "%CMD%" not in template:
+            messagebox.showwarning("Missing %CMD%", "Your custom command needs a %CMD% placeholder for where "
+                                   "the command goes.", parent=self)
+            return
         cfg = _load_config()
         cfg["preferred_terminal"] = pref
         cfg["custom_terminal_template"] = template
