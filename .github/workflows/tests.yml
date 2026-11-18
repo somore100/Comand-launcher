@@ -6,10 +6,14 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   test:
     name: ${{ matrix.os }} / Python ${{ matrix.python }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -33,8 +37,8 @@ jobs:
 
       - name: Run tests (Linux, under a virtual display)
         if: runner.os == 'Linux'
-        run: xvfb-run -a python -m pytest -q
+        run: xvfb-run -a python -m pytest -q -o faulthandler_timeout=90
 
       - name: Run tests
         if: runner.os != 'Linux'
-        run: python -m pytest -q
+        run: python -m pytest -q -o faulthandler_timeout=90
