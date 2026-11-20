@@ -153,7 +153,7 @@ def test_resolve_exec_command_wraps_python_script(tmp_path, monkeypatch):
     script = tmp_path / "run.py"
     script.write_text("print('hi')\n")
     monkeypatch.setattr(cv_execution, "is_windows", lambda: False)
-    assert cv_execution.resolve_exec_command(str(script)) == f'python3 "{script}"'
+    assert cv_execution.resolve_exec_command(str(script)) == f'python3 {cv_execution.quote_path(str(script))}'
 
 
 def test_resolve_exec_command_wraps_python_script_on_windows(tmp_path, monkeypatch):

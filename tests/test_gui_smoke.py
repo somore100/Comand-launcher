@@ -20,6 +20,10 @@ def root(tmp_path, monkeypatch):
         monkeypatch.setattr(messagebox, name, lambda *a, **k: "ok")
     for name in ("askyesno", "askokcancel", "askretrycancel"):
         monkeypatch.setattr(messagebox, name, lambda *a, **k: False)
+    if sys.platform == "darwin" and not os.environ.get("CV_GUI_TESTS"):
+        # Tk's update() blocks forever on the CI macOS runner (seen in GitHub Actions), so these dialog
+        # tests only run on a Mac when asked: CV_GUI_TESTS=1 python -m pytest tests/test_gui_smoke.py
+        pytest.skip("GUI smoke tests are opt-in on macOS (set CV_GUI_TESTS=1)")
     try:
         r = tk.Tk()
     except tk.TclError:
@@ -74,8 +78,12 @@ def test_other_dialogs(root, tmp_path):
 
 def test_dialogs_can_be_resized_and_keep_their_minimum(root):
     from cmdvault.entry_dialog import EntryDialog
+    root.deiconify()  # a dialog stays unmapped (width 1) while its parent is withdrawn on some systems
     dialog = EntryDialog(root, ["Uncategorized"])
     root.update()
+    if not dialog.winfo_viewable():
+        dialog.destroy()
+        pytest.skip("this display does not map windows")
     min_w, min_h = dialog.minsize()
     assert min_w >= 300 and min_h >= 200
     dialog.geometry(f"{min_w + 120}x{min_h + 80}")

@@ -29,6 +29,7 @@ class ScrollableBody(tk.Frame):
         self._bound = False
         self.bind("<Enter>", self._bind_wheel)
         self.bind("<Leave>", self._unbind_wheel)
+        self._scrollbar_toggles = 0
 
     def sync(self):
         """Make the canvas exactly as big as its content right now, so the
@@ -40,10 +41,20 @@ class ScrollableBody(tk.Frame):
 
     def _on_yscroll(self, first, last):
         self.scrollbar.set(first, last)
-        if float(first) <= 0.0 and float(last) >= 1.0:
-            self.scrollbar.pack_forget()
-        elif not self.scrollbar.winfo_ismapped():
-            self.scrollbar.pack(side="right", fill="y")
+        fits = float(first) <= 0.0 and float(last) >= 1.0
+        mapped = bool(self.scrollbar.winfo_ismapped())
+        if fits == mapped:  # state needs to change
+            # Showing the bar narrows the content, which can re-wrap text and make it taller, which
+            # can hide the bar again... Give up on auto-hiding after a few flips so that can't loop.
+            self._scrollbar_toggles += 1
+            if self._scrollbar_toggles > 6:
+                if not mapped:
+                    self.scrollbar.pack(side="right", fill="y")
+                return
+            if fits:
+                self.scrollbar.pack_forget()
+            else:
+                self.scrollbar.pack(side="right", fill="y")
 
     def _on_inner_configure(self, _event=None):
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
