@@ -2,7 +2,7 @@
 
 All notable changes to Command Vault are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
-## Unreleased
+## 1.8.1 - 2026-11-21
 
 ### Added
 
@@ -10,6 +10,7 @@ All notable changes to Command Vault are documented here. Format loosely follows
 
 ### Fixed
 
+* The Linux packages (`.deb`, `.rpm`, Arch and AppImage) refused to start on Ubuntu 24.04 and Pop!_OS 24.04 ("GLIBC_2.42 not found") because they were built on a too-new runner. They are now built on Ubuntu 22.04.
 * The window no longer freezes while the system password prompt (pkexec), `crontab` or Task Scheduler work. Installing or removing a passwordless rule and registering a schedule now run in the background, and schedule changes are serialized so two quick edits can't overwrite each other's crontab lines.
 
 ## 1.8.0 - 2026-11-20

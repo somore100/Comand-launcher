@@ -2,7 +2,7 @@
 
 **A lightweight launcher for your own scripts, tools, and apps** — no more `cd`-ing into folders and running `./script.sh` by hand.
 
-![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-lightgrey)
+![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 Save any command, script, or AppImage once, organize it by category, and launch it with one click — in a terminal or silently in the background.
@@ -21,6 +21,12 @@ Save any command, script, or AppImage once, organize it by category, and launch 
 - **Terminal or silent mode** — open a terminal window, or run detached in the background
 - **Autostart** — launch Command Vault itself at login, and/or set individual entries to start automatically on boot (works independently of whether Command Vault is running)
 - **Pick Installed App** — browse your system's installed applications directly (`.desktop` files on Linux, Start Menu shortcuts on Windows) instead of hunting for paths
+- **Input boxes** — put `{{name:default|Question}}` in a command and Command Vault asks for the value before each run, with a live preview of the final command
+- **Schedules** — run at one or several times a day, or repeat every N minutes/hours (optionally only between two times), using the system scheduler (cron / Task Scheduler) so it works even when the app is closed; failed runs are flagged
+- **Stop and status** — silent runs show a running marker and can be stopped with one click
+- **Passwordless `sudo` per entry** (Linux/macOS) — an optional, tightly scoped rule instead of a stored password
+- **Routines** — automate a website (record clicks) or a desktop program without writing code
+- **AI assistants (MCP)** — optionally let an assistant such as Claude run the entries you allow (`command-vault --mcp`); nothing is exposed by default
 - **Configurable data storage** — commands are stored in an organized, OS-appropriate folder by default (`~/.local/share/command-vault` on Linux, `%APPDATA%\CommandVault` on Windows), and you can change the location from Settings
 
 ## Downloads
@@ -29,8 +35,11 @@ Prebuilt binaries are attached to each [release](../../releases):
 
 | Platform | File |
 |---|---|
-| Linux | `CommandVault-x86_64.AppImage` — make it executable (`chmod +x`) and run it |
+| Linux | `CommandVault-x86_64.AppImage` (make it executable with `chmod +x`), or `command-vault_<version>_amd64.deb`, `command-vault-<version>-1.x86_64.rpm`, `command-vault-<version>-1-x86_64.pkg.tar.zst` |
 | Windows | `CommandVault.exe` |
+| macOS | `CommandVault-macOS.dmg` (unsigned: right-click > Open the first time) |
+
+The Linux builds are made on Ubuntu 22.04, so they run on Ubuntu/Pop!_OS 22.04 and newer, Debian 12 and newer, and current Fedora. Each release includes a `SHA256SUMS` file to check your download.
 
 ## Running from source
 

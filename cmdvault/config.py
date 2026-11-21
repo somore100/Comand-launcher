@@ -3,7 +3,7 @@
 
 
 APP_NAME = "Command Vault"
-APP_VERSION = "1.8.0"
+APP_VERSION = "1.8.1"
 GITHUB_REPO = "somore100/Comand-launcher"  # typo in repo name is intentional, cosmetic only
 
 # "Leave Feedback" (see feedback.py). Reports go to the relay when its URL is
