@@ -91,6 +91,44 @@ def child_process_env():
     return env
 
 
+# Silent-mode processes that are still running, by entry id, so the app can show "running" and stop them.
+_RUNNING = {}
+_RUNNING_LOCK = threading.Lock()
+
+
+def running_count(entry_id):
+    with _RUNNING_LOCK:
+        return len([p for p in _RUNNING.get(entry_id, []) if p.poll() is None])
+
+
+def running_ids():
+    with _RUNNING_LOCK:
+        return {i for i, procs in _RUNNING.items() if any(p.poll() is None for p in procs)}
+
+
+def _kill_tree(proc):
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True)
+        else:
+            import signal
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)  # started with start_new_session
+    except (OSError, ProcessLookupError):
+        try:
+            proc.terminate()
+        except OSError:
+            pass
+
+
+def stop_entry(entry_id):
+    """Stops every silent run of this entry that is still going. Returns how many were stopped."""
+    with _RUNNING_LOCK:
+        procs = [p for p in _RUNNING.get(entry_id, []) if p.poll() is None]
+    for proc in procs:
+        _kill_tree(proc)
+    return len(procs)
+
+
 def run_entry(entry, log=None):
     """Runs an entry. `log`, if given, is called with short status strings
     for the console panel -- e.g. the resolved command, working dir, and
@@ -169,14 +207,26 @@ def run_entry(entry, log=None):
             messagebox.showerror("Failed to launch", str(e))
             return
 
-        if log:
-            def reader():
-                try:
-                    for line in proc.stdout:
-                        log(f'  [{entry_name}] {line.rstrip()}')
-                except Exception:
-                    pass
-            threading.Thread(target=reader, daemon=True).start()
+        entry_id = entry.get("id") or entry_name
+        with _RUNNING_LOCK:
+            _RUNNING.setdefault(entry_id, []).append(proc)
+        emit(f'  (running in the background \u2014 select "{entry_name}" and click Stop to end it)')
+
+        def reader():
+            try:
+                for line in proc.stdout:
+                    emit(f'  [{entry_name}] {line.rstrip()}')
+            except Exception:
+                pass
+            code = proc.wait()
+            with _RUNNING_LOCK:
+                procs = _RUNNING.get(entry_id, [])
+                if proc in procs:
+                    procs.remove(proc)
+                if not procs:
+                    _RUNNING.pop(entry_id, None)
+            emit(f'  \u25A0 "{entry_name}" finished (exit code {code})')
+        threading.Thread(target=reader, daemon=True).start()
         return
 
     for builder in get_terminal_builders():

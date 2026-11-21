@@ -1,6 +1,7 @@
 """scheduling -- split out of the former monolithic main.py."""
 import os
 import subprocess
+import threading
 from .browser import browser_env_line
 from .execution import program_command, quote_path, resolve_exec_command
 
@@ -99,6 +100,9 @@ def _delete_windows_tasks(entry_id):
         subprocess.run(["schtasks", "/delete", "/tn", _task_name(entry_id, suffix), "/f"], capture_output=True)
 
 
+_SCHEDULE_LOCK = threading.RLock()
+
+
 def _read_crontab_lines():
     """Returns (lines, crontab_available). crontab_available is False only
     if the `crontab` command itself couldn't be run at all (not installed)
@@ -148,6 +152,11 @@ def entry_schedule_registered(entry_id):
 
 
 def set_entry_schedule(entry, enabled):
+    with _SCHEDULE_LOCK:  # the crontab is read, edited and rewritten; two edits at once would lose one
+        _set_entry_schedule(entry, enabled)
+
+
+def _set_entry_schedule(entry, enabled):
     entry_id = entry["id"]
 
     if is_windows():

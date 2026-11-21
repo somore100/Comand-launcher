@@ -6,6 +6,7 @@ import sys
 import queue
 import shutil
 import subprocess
+import threading
 import tkinter as tk
 from tkinter import ttk
 from .compat import pynput_keyboard, HAVE_PYNPUT, HAVE_PIL, pystray, HAVE_PYSTRAY
@@ -26,7 +27,7 @@ from .platform_utils import is_mac, is_windows
 from . import schedule_spec
 from .scheduling import set_entry_schedule
 from .settings_dialog import SettingsDialog
-from .terminals import run_entry
+from .terminals import run_entry, running_ids, stop_entry
 from .theme import ALL_CATEGORY, COLOR_ACCENT, COLOR_BG, COLOR_GREEN, COLOR_PANEL, COLOR_RED, COLOR_ROW_ALT, COLOR_SELECT, COLOR_SIDEBAR, COLOR_SUBTEXT, COLOR_TEXT, COLOR_YELLOW, DEFAULT_ICON, FONT_HEADING, FONT_NORMAL, FONT_SMALL, FONT_TITLE, UNCATEGORIZED
 from .updates import check_for_update
 
@@ -46,6 +47,7 @@ class CommandVault(tk.Tk):
         self.selected_category = ALL_CATEGORY
         self._log_queue = queue.Queue()
         self._main_thread_queue = queue.Queue()
+        self._running_shown = set()
         self._hotkey_listener = None
         self._tray_icon = None
         self._instance_lock_handle = acquire_single_instance_lock(
@@ -60,6 +62,7 @@ class CommandVault(tk.Tk):
         self._log("Command Vault ready.")
         self._seen_run_status = {}
         self._poll_run_status()
+        self._poll_running()
 
         self.protocol("WM_DELETE_WINDOW", self._on_close_request)
         self._rebuild_hotkey_listener()
@@ -367,6 +370,8 @@ class CommandVault(tk.Tk):
                                          bg=COLOR_YELLOW, fg=COLOR_SIDEBAR, font=("Segoe UI", 10, "bold"),
                                          relief="flat", padx=16, pady=6)
         self.run_all_button.pack(side="left", padx=(8, 0))
+        tk.Button(action_bar, text="\u25A0 Stop", command=self._stop_selected, bg=COLOR_PANEL, fg=COLOR_RED,
+                  font=FONT_NORMAL, relief="flat", padx=16, pady=6).pack(side="left", padx=(8, 0))
         tk.Button(action_bar, text="Edit", command=self._edit_selected, bg=COLOR_PANEL, fg=COLOR_TEXT,
                   font=FONT_NORMAL, relief="flat", padx=16, pady=6).pack(side="left", padx=(8, 0))
         tk.Button(action_bar, text="Last run", command=self._show_last_run, bg=COLOR_PANEL, fg=COLOR_TEXT,
@@ -546,13 +551,14 @@ class CommandVault(tk.Tk):
             boot_label = "\u2713" if cmd.get("autostart") else ""
             schedule_label = schedule_spec.summary(cmd) if cmd.get("schedule_enabled") else ""
             tags = ["even" if i % 2 else "odd"]
+            name_label = cmd["name"] + ("  \u25CF running" if cmd["id"] in self._running_shown else "")
             if cmd.get("schedule_enabled"):
                 run_status = read_run_status(cmd["id"])
                 if run_status and run_status["failed"]:
                     schedule_label += " \u26A0"
                     tags.append("failed")
             self.tree.insert("", tk.END, iid=cmd["id"],
-                              values=(cmd.get("icon", DEFAULT_ICON), cmd["name"], cmd["category"], mode_label,
+                              values=(cmd.get("icon", DEFAULT_ICON), name_label, cmd["category"], mode_label,
                                       boot_label, schedule_label),
                               tags=tuple(tags))
         self._update_run_all_label(len(visible))
@@ -635,10 +641,15 @@ class CommandVault(tk.Tk):
                 "{{name}} text still in it and likely fail. Consider removing the "
                 "placeholders for scheduled entries, or leaving the schedule off for this one."
             )
-        try:
-            set_entry_schedule(entry, entry.get("schedule_enabled", False))
-        except (NotImplementedError, RuntimeError) as e:
-            messagebox.showwarning("Scheduling failed", str(e))
+        enabled = entry.get("schedule_enabled", False)
+
+        def done(_result, error):
+            if isinstance(error, (NotImplementedError, RuntimeError)):
+                messagebox.showwarning("Scheduling failed", str(error))
+            elif error is not None:
+                messagebox.showwarning("Scheduling failed", f"Unexpected error: {error}")
+            self._refresh_list()
+        self._in_background(lambda: set_entry_schedule(entry, enabled), done)
 
     def _apply_admin(self, entry):
         """Keeps the entry's sudoers rule in step with its admin_mode: installs
@@ -659,22 +670,28 @@ class CommandVault(tk.Tk):
                     + "\n".join(f"  {run_as}: {spec}" for run_as, spec in plan["specs"])
                     + "\n\nYou'll be asked for your system password once to install the rule. Continue?"):
                 return
-            ok, msg = install_rule(entry, plan)
-            if ok:
-                entry["admin_rule_hash"] = digest
-                save_data(self.data)
-                self._log(f'Allowed {len(plan["specs"])} sudo command(s) for "{entry["name"]}" without a password.')
-            else:
-                messagebox.showwarning("Administrator rights",
-                                       f"The rule wasn't installed, so this entry will still ask for a "
-                                       f"password (or fail when unattended).\n\n{msg}")
+            self._log(f'Waiting for your system password prompt for "{entry["name"]}"...')
+
+            def installed(result, error):
+                ok, msg = result if error is None else (False, str(error))
+                if ok:
+                    entry["admin_rule_hash"] = digest
+                    save_data(self.data)
+                    self._log(f'Allowed {len(plan["specs"])} sudo command(s) for "{entry["name"]}" without a password.')
+                else:
+                    messagebox.showwarning("Administrator rights",
+                                           f"The rule wasn't installed, so this entry will still ask for a "
+                                           f"password (or fail when unattended).\n\n{msg}")
+            self._in_background(lambda: install_rule(entry, plan), installed)
         elif has_rule:
-            ok, msg = remove_rule(entry)
-            if ok:
-                entry["admin_rule_hash"] = ""
-                save_data(self.data)
-            else:
-                messagebox.showwarning("Administrator rights", f"Couldn't remove the old rule:\n\n{msg}")
+            def removed(result, error):
+                ok, msg = result if error is None else (False, str(error))
+                if ok:
+                    entry["admin_rule_hash"] = ""
+                    save_data(self.data)
+                else:
+                    messagebox.showwarning("Administrator rights", f"Couldn't remove the old rule:\n\n{msg}")
+            self._in_background(lambda: remove_rule(entry), removed)
 
     def _on_double_click(self, event):
         # Only a double-click on an actual row runs it, not on the column headers or empty space.
@@ -759,21 +776,21 @@ class CommandVault(tk.Tk):
                         pass
             if entry.get("admin_rule_hash"):
                 entry["admin_mode"] = "off"
-                ok, msg = remove_rule(entry)
-                if not ok:
-                    self._remember_stale_rule(entry)
-                    messagebox.showwarning(
-                        "Administrator rights",
-                        f"The passwordless rule for '{entry['name']}' is still installed ({msg}).\n\n"
-                        "Remove it later with Settings > \"Remove all passwordless rules\".")
+                def rule_removed(result, error, entry=entry):
+                    ok, msg = result if error is None else (False, str(error))
+                    if not ok:
+                        self._remember_stale_rule(entry)
+                        messagebox.showwarning(
+                            "Administrator rights",
+                            f"The passwordless rule for '{entry['name']}' is still installed ({msg}).\n\n"
+                            "Remove it later with Settings > \"Remove all passwordless rules\".")
+                self._in_background(lambda: remove_rule(entry), rule_removed)
             try:
                 set_entry_autostart(entry, False)
             except NotImplementedError:
                 pass
-            try:
-                set_entry_schedule(entry, False)
-            except (NotImplementedError, RuntimeError):
-                pass
+            self._in_background(lambda: set_entry_schedule(entry, False))
+            stop_entry(entry["id"])
             profile_dir = browser_profile_path(entry)
             if profile_dir and not (entry.get("browser_profile_dir") or "").strip() and os.path.isdir(profile_dir):
                 if messagebox.askyesno("Browser profile",
@@ -817,6 +834,40 @@ class CommandVault(tk.Tk):
         if changed:
             self._refresh_list()
         self.after(30000, self._poll_run_status)
+
+    def _poll_running(self):
+        """Every 2s, refresh the list if the set of still-running silent entries changed."""
+        try:
+            now = running_ids()
+            if now != self._running_shown:
+                self._running_shown = now
+                self._refresh_list()
+        finally:
+            self.after(2000, self._poll_running)
+
+    def _stop_selected(self):
+        entry = self._get_selected_entry()
+        if not entry:
+            messagebox.showinfo("No selection", "Select an entry to stop first.")
+            return
+        count = stop_entry(entry["id"])
+        if count:
+            self._log(f'\u25A0 Stopping "{entry["name"]}"...')
+        else:
+            self._log(f'"{entry["name"]}" has no background run to stop (terminal windows are closed by hand).')
+
+    def _in_background(self, work, done=None):
+        """Runs work() on a worker thread so the window stays responsive (pkexec's password prompt and
+        crontab/schtasks can take seconds). done(result, error) runs back on the main thread."""
+        def runner():
+            result = error = None
+            try:
+                result = work()
+            except Exception as e:  # noqa: BLE001 - reported to done()
+                error = e
+            if done:
+                self._post_to_main_thread(lambda: done(result, error))
+        threading.Thread(target=runner, daemon=True).start()
 
     def _run_selected(self):
         entry = self._get_selected_entry()

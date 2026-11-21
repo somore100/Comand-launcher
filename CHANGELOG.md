@@ -2,6 +2,16 @@
 
 All notable changes to Command Vault are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## Unreleased
+
+### Added
+
+* A "Stop" button and a "running" marker for entries run in Silent mode. Command Vault now tracks background runs, shows `● running` next to the entry's name, ends the whole process group when you click Stop (or delete the entry), and logs the exit code when a run finishes.
+
+### Fixed
+
+* The window no longer freezes while the system password prompt (pkexec), `crontab` or Task Scheduler work. Installing or removing a passwordless rule and registering a schedule now run in the background, and schedule changes are serialized so two quick edits can't overwrite each other's crontab lines.
+
 ## 1.8.0 - 2026-11-20
 
 ### Added
