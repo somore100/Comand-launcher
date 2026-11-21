@@ -410,7 +410,7 @@ class EntryDialog(tk.Toplevel):
         def _radio(text, value):
             return tk.Radiobutton(schedule_frame, text=text, variable=self.schedule_mode_var, value=value,
                                   bg=COLOR_BG, fg=COLOR_TEXT, selectcolor=COLOR_PANEL, activebackground=COLOR_BG,
-                                  activeforeground=COLOR_TEXT, font=FONT_SMALL, command=_show_mode)
+                                  activeforeground=COLOR_TEXT, font=FONT_SMALL, command=lambda: _show_mode())
 
         times_anchor = _radio("At these times each day", schedule_spec.MODE_TIMES)
         times_anchor.pack(anchor="w", pady=(4, 0))
