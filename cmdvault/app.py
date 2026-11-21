@@ -23,6 +23,7 @@ from .hotkeys import build_tray_image
 from .instance import acquire_single_instance_lock, release_single_instance_lock
 from .placeholders import extract_placeholders
 from .platform_utils import is_mac, is_windows
+from . import schedule_spec
 from .scheduling import set_entry_schedule
 from .settings_dialog import SettingsDialog
 from .terminals import run_entry
@@ -346,7 +347,7 @@ class CommandVault(tk.Tk):
         self.tree.column("category", width=130, minwidth=60, anchor="w")
         self.tree.column("mode", width=130, minwidth=60, anchor="center")
         self.tree.column("boot", width=50, anchor="center", stretch=False)
-        self.tree.column("schedule", width=80, anchor="center", stretch=False)
+        self.tree.column("schedule", width=130, anchor="center", stretch=False)
         scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=scrollbar.set)
         scrollbar.pack(side="right", fill="y")
@@ -543,7 +544,7 @@ class CommandVault(tk.Tk):
             if cmd.get("entry_type") == "appimage":
                 mode_label += " \u00b7 Program"
             boot_label = "\u2713" if cmd.get("autostart") else ""
-            schedule_label = cmd.get("schedule_time", "") if cmd.get("schedule_enabled") else ""
+            schedule_label = schedule_spec.summary(cmd) if cmd.get("schedule_enabled") else ""
             tags = ["even" if i % 2 else "odd"]
             if cmd.get("schedule_enabled"):
                 run_status = read_run_status(cmd["id"])

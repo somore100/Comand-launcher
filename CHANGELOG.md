@@ -2,10 +2,12 @@
 
 All notable changes to Command Vault are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
-## Unreleased
+## 1.8.0 - 2026-11-20
 
 ### Added
 
+* Flexible schedules: an entry can run at several times a day (`08:00, 13:30, 18:00`) or repeat every N minutes/hours, optionally only between two times of day (e.g. every 30 minutes from 08:00 to 18:00). The smallest step is one minute (cron and Task Scheduler can't do seconds), and intervals must divide evenly (1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30 minutes; 1, 2, 3, 4, 6, 8, 12, 24 hours). On Windows the weekday boxes apply to fixed times only. The list shows e.g. `every 30 min 08:00-18:00`.
+* `scripts/mcp_check.py` and a test that talk to the MCP server over stdio like an AI assistant would, using a throw-away vault.
 * MCP server for AI assistants: `command-vault --mcp` runs a headless Model Context Protocol server over stdio (works from source, the AppImage and the packaged builds). An assistant can list the entries you allowed, run them (no window; exit code and output returned) and read a scheduled entry's last result. Nothing is exposed by default: tick "AI assistants" in an entry's Edit dialog to allow it. It cannot create, edit or delete anything, entries with administrator rights are never exposed, input values for `{{placeholders}}` are rejected if they contain shell syntax, and every AI run is logged to `mcp-log.txt`. Settings has a copyable config snippet for the assistant.
 * macOS startup: "Run when the computer starts" now works on macOS for Command Vault itself and for individual entries (per-user LaunchAgents in `~/Library/LaunchAgents`).
 * "+ Add many" can now set "Run at startup", a daily schedule time and administrator rights for the whole batch (admin approvals are asked per entry).

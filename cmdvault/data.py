@@ -9,6 +9,7 @@ import sys
 import tempfile
 import tkinter as tk
 import uuid
+from . import schedule_spec
 from .platform_utils import is_mac, is_windows
 from .theme import DEFAULT_ICON, UNCATEGORIZED
 
@@ -178,6 +179,7 @@ def _normalize_vault_data(raw):
         if not valid_schedule_time(cmd.get("schedule_time", "")):
             cmd["schedule_time"] = ""
             cmd["schedule_enabled"] = False
+        schedule_spec.sanitize(cmd)
         cmd.setdefault("working_dir", "")
         cmd.setdefault("run_mode", "terminal")
         cmd.setdefault("entry_type", "command")
@@ -188,7 +190,12 @@ def _normalize_vault_data(raw):
         cmd.setdefault("hotkey_pynput", "")
         cmd.setdefault("schedule_enabled", False)
         cmd.setdefault("schedule_days", [])  # empty list means "every day"
-        cmd.setdefault("schedule_time", "")  # "HH:MM", 24h
+        cmd.setdefault("schedule_time", "")  # "HH:MM", 24h (the first time, or the interval window start)
+        cmd.setdefault("schedule_mode", "times")  # "times" (fixed times each day) or "interval" (repeat every N min)
+        cmd.setdefault("schedule_times", [])
+        cmd.setdefault("schedule_interval", 0)  # minutes, for "interval"
+        cmd.setdefault("schedule_window_start", "")
+        cmd.setdefault("schedule_window_end", "")
         cmd.setdefault("browser_profile", False)
         cmd.setdefault("browser_profile_dir", "")  # "" = default per-entry folder
         cmd.setdefault("routine", {})  # {"steps": [...], "show_browser": bool} for entry_type "routine"
@@ -279,6 +286,11 @@ def _blank_entry(name="", command=""):
         "schedule_enabled": False,
         "schedule_days": [],
         "schedule_time": "",
+        "schedule_mode": "times",
+        "schedule_times": [],
+        "schedule_interval": 0,
+        "schedule_window_start": "",
+        "schedule_window_end": "",
         "browser_profile": False,
         "browser_profile_dir": "",
         "routine": {},

@@ -13,6 +13,7 @@ from .autostart import entry_autostart_enabled
 from .browser import BROWSER_PROFILE_ENV, browser_profile_path
 from .data import _load_config
 from .hotkeys import HotkeyRecorderDialog
+from . import schedule_spec
 from .placeholders import extract_placeholders
 from .platform_utils import is_linux, is_mac, is_windows
 from . import routine as rt
@@ -367,9 +368,17 @@ class EntryDialog(tk.Toplevel):
         self.schedule_enabled_var = tk.BooleanVar(
             value=entry.get("schedule_enabled", False) if entry else False
         )
-        self.schedule_time_var = tk.StringVar(
-            value=(entry.get("schedule_time") or "09:00") if entry else "09:00"
-        )
+        e = entry or {}
+        self.schedule_mode_var = tk.StringVar(value=e.get("schedule_mode") or schedule_spec.MODE_TIMES)
+        self.schedule_times_var = tk.StringVar(
+            value=", ".join(schedule_spec.entry_times(e)) or "09:00")
+        interval = int(e.get("schedule_interval") or 0)
+        if interval >= 60 and interval % 60 == 0:
+            self.schedule_interval_var, self.schedule_unit_var = tk.StringVar(value=str(interval // 60)), tk.StringVar(value="hours")
+        else:
+            self.schedule_interval_var, self.schedule_unit_var = tk.StringVar(value=str(interval or 30)), tk.StringVar(value="minutes")
+        self.schedule_wstart_var = tk.StringVar(value=e.get("schedule_window_start", ""))
+        self.schedule_wend_var = tk.StringVar(value=e.get("schedule_window_end", ""))
         existing_days = set(entry.get("schedule_days") or []) if entry else set()
         self.schedule_day_vars = {d: tk.BooleanVar(value=(d in existing_days)) for d in SCHEDULE_WEEKDAYS}
 
@@ -381,8 +390,12 @@ class EntryDialog(tk.Toplevel):
                 sec_sched.set_summary("Off")
                 return
             days = [d for d in SCHEDULE_WEEKDAYS if self.schedule_day_vars[d].get()]
-            sec_sched.set_summary(f"{self.schedule_time_var.get()}, " + (", ".join(days) if days else "every day"))
-        for v in [self.schedule_enabled_var, self.schedule_time_var, *self.schedule_day_vars.values()]:
+            fields, error = self._schedule_fields()
+            what = "check the times" if error else schedule_spec.summary(fields)
+            sec_sched.set_summary(f"{what}, " + (", ".join(days) if days else "every day"))
+        for v in [self.schedule_enabled_var, self.schedule_mode_var, self.schedule_times_var,
+                  self.schedule_interval_var, self.schedule_unit_var, self.schedule_wstart_var,
+                  self.schedule_wend_var, *self.schedule_day_vars.values()]:
             v.trace_add("write", _sched_summary)
         _sched_summary()
         schedule_frame = sec_sched.content
@@ -390,11 +403,49 @@ class EntryDialog(tk.Toplevel):
                         bg=COLOR_BG, fg=COLOR_TEXT, selectcolor=COLOR_PANEL, activebackground=COLOR_BG,
                         activeforeground=COLOR_TEXT, font=FONT_SMALL).pack(anchor="w")
 
-        time_row = tk.Frame(schedule_frame, bg=COLOR_BG)
-        time_row.pack(anchor="w", pady=(2, 0))
-        tk.Label(time_row, text="Time (24h):", bg=COLOR_BG, fg=COLOR_SUBTEXT, font=FONT_SMALL).pack(side="left")
-        tk.Entry(time_row, textvariable=self.schedule_time_var, width=6, font=FONT_NORMAL, bg=COLOR_PANEL,
-                  fg=COLOR_TEXT, insertbackground=COLOR_TEXT, relief="flat").pack(side="left", padx=(6, 0))
+        def _entry(parent, var, width):
+            return tk.Entry(parent, textvariable=var, width=width, font=FONT_NORMAL, bg=COLOR_PANEL,
+                            fg=COLOR_TEXT, insertbackground=COLOR_TEXT, relief="flat")
+
+        def _radio(text, value):
+            return tk.Radiobutton(schedule_frame, text=text, variable=self.schedule_mode_var, value=value,
+                                  bg=COLOR_BG, fg=COLOR_TEXT, selectcolor=COLOR_PANEL, activebackground=COLOR_BG,
+                                  activeforeground=COLOR_TEXT, font=FONT_SMALL, command=_show_mode)
+
+        times_anchor = _radio("At these times each day", schedule_spec.MODE_TIMES)
+        times_anchor.pack(anchor="w", pady=(4, 0))
+        times_row = tk.Frame(schedule_frame, bg=COLOR_BG)
+        tk.Label(times_row, text="Times (24h, separated by commas):", bg=COLOR_BG, fg=COLOR_SUBTEXT,
+                 font=FONT_SMALL).pack(side="left")
+        _entry(times_row, self.schedule_times_var, 22).pack(side="left", padx=(6, 0))
+
+        _radio("Repeat every...", schedule_spec.MODE_INTERVAL).pack(anchor="w", pady=(6, 0))
+        interval_box = tk.Frame(schedule_frame, bg=COLOR_BG)
+        interval_row = tk.Frame(interval_box, bg=COLOR_BG)
+        interval_row.pack(anchor="w")
+        _entry(interval_row, self.schedule_interval_var, 5).pack(side="left")
+        ttk.Combobox(interval_row, textvariable=self.schedule_unit_var, values=["minutes", "hours"],
+                     state="readonly", width=8).pack(side="left", padx=(6, 0))
+        window_row = tk.Frame(interval_box, bg=COLOR_BG)
+        window_row.pack(anchor="w", pady=(4, 0))
+        tk.Label(window_row, text="Only between (optional):", bg=COLOR_BG, fg=COLOR_SUBTEXT,
+                 font=FONT_SMALL).pack(side="left")
+        _entry(window_row, self.schedule_wstart_var, 6).pack(side="left", padx=(6, 4))
+        tk.Label(window_row, text="and", bg=COLOR_BG, fg=COLOR_SUBTEXT, font=FONT_SMALL).pack(side="left")
+        _entry(window_row, self.schedule_wend_var, 6).pack(side="left", padx=(4, 0))
+        tk.Label(interval_box, text=f"{schedule_spec.interval_help()}. The shortest possible step is one "
+                 "minute (the system scheduler can't do seconds). On Windows the weekday boxes don't apply to repeats.",
+                 bg=COLOR_BG, fg=COLOR_SUBTEXT, font=("Segoe UI", 8), wraplength=380, justify="left"
+                 ).pack(anchor="w", pady=(4, 0))
+
+        def _show_mode():
+            if self.schedule_mode_var.get() == schedule_spec.MODE_INTERVAL:
+                times_row.pack_forget()
+                interval_box.pack(anchor="w", padx=(18, 0))
+            else:
+                interval_box.pack_forget()
+                times_row.pack(anchor="w", padx=(18, 0), after=times_anchor)
+        _show_mode()
 
         days_row = tk.Frame(schedule_frame, bg=COLOR_BG)
         days_row.pack(anchor="w", pady=(4, 0))
@@ -615,6 +666,18 @@ class EntryDialog(tk.Toplevel):
                 self.type_var.set("appimage")
                 self._sync_command_widget()
 
+    def _schedule_fields(self):
+        """(fields, error) for what the schedule boxes currently say."""
+        if self.schedule_mode_var.get() == schedule_spec.MODE_INTERVAL:
+            try:
+                number = int(self.schedule_interval_var.get().strip())
+            except ValueError:
+                return {}, "The repeat interval must be a whole number."
+            minutes = number * (60 if self.schedule_unit_var.get() == "hours" else 1)
+            return schedule_spec.make_spec(schedule_spec.MODE_INTERVAL, "", minutes,
+                                           self.schedule_wstart_var.get(), self.schedule_wend_var.get())
+        return schedule_spec.make_spec(schedule_spec.MODE_TIMES, self.schedule_times_var.get())
+
     def _add_input_box_event(self, event=None):
         self._add_input_box()
         return "break"
@@ -704,13 +767,12 @@ class EntryDialog(tk.Toplevel):
         icon = self.icon_var.get().strip() or DEFAULT_ICON
 
         schedule_enabled = bool(self.schedule_enabled_var.get())
-        schedule_time = self.schedule_time_var.get().strip()
-        if schedule_enabled and not SCHEDULE_TIME_RE.match(schedule_time):
-            messagebox.showwarning(
-                "Invalid time",
-                "Schedule time must be in 24-hour HH:MM format, e.g. 09:00 or 18:30."
-            )
+        schedule_fields, schedule_error = self._schedule_fields()
+        if schedule_enabled and schedule_error:
+            messagebox.showwarning("Schedule", schedule_error, parent=self)
             return
+        if schedule_error:  # off anyway: keep the defaults instead of the half-typed values
+            schedule_fields, _ = schedule_spec.make_spec(schedule_spec.MODE_TIMES, "09:00")
         schedule_days = [d for d in SCHEDULE_WEEKDAYS if self.schedule_day_vars[d].get()]
 
         self.result = {
@@ -727,7 +789,7 @@ class EntryDialog(tk.Toplevel):
             "hotkey_pynput": self.entry_hotkey_pynput,
             "schedule_enabled": schedule_enabled,
             "schedule_days": schedule_days,
-            "schedule_time": schedule_time,
+            **schedule_fields,
             "browser_profile": bool(self.browser_profile_var.get()) or (is_routine and self.routine.get("kind", "web") == "web"),
             "routine": self.routine if is_routine else {},
             "browser_profile_dir": self.browser_profile_dir_var.get().strip(),

@@ -10,6 +10,7 @@ def _exec_for(entry):
     if entry.get("entry_type") == "appimage":
         return program_command(entry["command"])
     return resolve_exec_command(entry["command"])
+from . import schedule_spec
 from .platform_utils import is_windows
 from .privilege import apply_admin
 from .runstatus import clear_run_status, posix_status_wrapper, windows_status_wrapper
@@ -56,14 +57,16 @@ def _cron_marker(entry_id):
     return f"# command-vault-schedule:{entry_id}"
 
 
+def _build_cron_schedule_lines(entry, script_path):
+    """Pure line-building, kept separate from subprocess/crontab I/O so it's unit-testable without a
+    real cron installation. One line per scheduled time; an interval is a single line. schedule_days
+    uses the same "empty list = every day" convention as the rest of the app."""
+    return [f'{minute} {hour} * * {dow} bash "{script_path}" {_cron_marker(entry["id"])}'
+            for minute, hour, dow in schedule_spec.cron_schedules(entry)]
+
+
 def _build_cron_schedule_line(entry, script_path):
-    """Pure line-building, kept separate from subprocess/crontab I/O so it's
-    unit-testable without a real cron installation. schedule_days uses the
-    same "empty list = every day" convention as the rest of the app."""
-    hh, mm = entry["schedule_time"].split(":")
-    days = entry.get("schedule_days") or []
-    dow = ",".join(str(CRON_WEEKDAY_CODES[d]) for d in days) if days else "*"
-    return f'{int(mm)} {int(hh)} * * {dow} bash "{script_path}" {_cron_marker(entry["id"])}'
+    return _build_cron_schedule_lines(entry, script_path)[0]
 
 
 def _cron_lines_without_marker(lines, entry_id):
@@ -75,17 +78,25 @@ def _cron_lines_without_marker(lines, entry_id):
     return [line for line in lines if marker not in line]
 
 
+def _task_name(entry_id, suffix=""):
+    return f"CommandVault-{entry_id}{suffix}"
+
+
+def _schtasks_create_commands(entry, script_path):
+    """Pure arg-list building for the Windows Task Scheduler path (one command per scheduled time),
+    separate from subprocess.run so the args are testable on any OS."""
+    return [["schtasks", "/create", "/tn", _task_name(entry["id"], suffix), "/tr", f'"{script_path}"', "/f"] + args
+            for suffix, args in schedule_spec.schtasks_jobs(entry)]
+
+
 def _schtasks_create_args(entry, script_path):
-    """Pure arg-list building for the Windows Task Scheduler path, kept
-    separate from subprocess.run so the args themselves are testable on
-    any OS even though schtasks itself only exists on Windows."""
-    hh, mm = entry["schedule_time"].split(":")
-    days = entry.get("schedule_days") or []
-    task_name = f"CommandVault-{entry['id']}"
-    base = ["schtasks", "/create", "/tn", task_name, "/tr", f'"{script_path}"', "/f"]
-    if days:
-        return base + ["/sc", "WEEKLY", "/d", ",".join(days), "/st", f"{hh}:{mm}"]
-    return base + ["/sc", "DAILY", "/st", f"{hh}:{mm}"]
+    return _schtasks_create_commands(entry, script_path)[0]
+
+
+def _delete_windows_tasks(entry_id):
+    # The first task plus any extra-time tasks (-2, -3, ...); missing ones just report an error we ignore.
+    for suffix in [""] + [f"-{i}" for i in range(2, schedule_spec.MAX_TIMES + 1)]:
+        subprocess.run(["schtasks", "/delete", "/tn", _task_name(entry_id, suffix), "/f"], capture_output=True)
 
 
 def _read_crontab_lines():
@@ -143,7 +154,7 @@ def set_entry_schedule(entry, enabled):
         task_name = f"CommandVault-{entry_id}"
         script_path = os.path.join(windows_schedule_scripts_dir(), f"cv-{entry_id}.bat")
         if not enabled:
-            subprocess.run(["schtasks", "/delete", "/tn", task_name, "/f"], capture_output=True)
+            _delete_windows_tasks(entry_id)
             if os.path.exists(script_path):
                 os.remove(script_path)
             clear_run_status(entry_id)
@@ -162,7 +173,9 @@ def set_entry_schedule(entry, enabled):
             f.write("@echo off\n" + "\n".join(windows_status_wrapper(entry_id, body)) + "\n")
 
         try:
-            subprocess.run(_schtasks_create_args(entry, script_path), check=True, capture_output=True)
+            _delete_windows_tasks(entry_id)  # an edited schedule may have fewer times than before
+            for cmd in _schtasks_create_commands(entry, script_path):
+                subprocess.run(cmd, check=True, capture_output=True)
         except (OSError, subprocess.CalledProcessError) as e:
             raise RuntimeError(f"Couldn't register the scheduled task: {e}") from e
         return
@@ -200,7 +213,7 @@ def set_entry_schedule(entry, enabled):
             "Scheduling needs the 'crontab' command, which isn't available on this system."
         )
     lines = _cron_lines_without_marker(lines, entry_id)
-    lines.append(_build_cron_schedule_line(entry, script_path))
+    lines.extend(_build_cron_schedule_lines(entry, script_path))
     if not _write_crontab_lines(lines):
         raise RuntimeError("Couldn't update the crontab. Check that cron is set up for your user.")
 

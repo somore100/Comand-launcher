@@ -5,6 +5,7 @@ Ordered work list. Update as items ship.
 ## Done
 - UI fits small screens (scrollable dialogs, pinned buttons, main window top bar/columns) - 1.7.0
 - 1.7.0 released (AppImage, exe, macOS dmg)
+- 1.8.0: schedules with several times a day or repeat intervals; MCP server; audit fixes
 - Optional administrator rights for `sudo` entries on Linux/macOS (off / ask / remember via exact sudoers rule)
 
 ## Built, waiting for your testing (batch 2)
