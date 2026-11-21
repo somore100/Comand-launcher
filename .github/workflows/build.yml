@@ -157,6 +157,9 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Check out (for the changelog)
+        uses: actions/checkout@v5
+
       - name: Download all artifacts
         uses: actions/download-artifact@v5
         with:
@@ -171,6 +174,18 @@ jobs:
           cp artifacts/CommandVault-macOS-dmg/CommandVault-macOS.dmg release/
           cd release && sha256sum * > SHA256SUMS && cat SHA256SUMS
 
+      - name: Write release notes from CHANGELOG.md
+        run: |
+          # The section whose heading starts with the tag (e.g. "## 1.8.0" or "## v1.8.0"), up to the next "## ".
+          VER="${GITHUB_REF_NAME#v}"
+          awk -v v="$VER" '
+            /^## / { if (on) exit; h=$2; sub(/^v/, "", h); if (h == v) { on=1; next } }
+            on { print }
+          ' CHANGELOG.md > notes.md
+          if [ ! -s notes.md ]; then echo "See CHANGELOG.md for details." > notes.md; fi
+          printf '\n\nSHA256 checksums are in the SHA256SUMS file.\n' >> notes.md
+          cat notes.md
+
       # Uses the preinstalled GitHub CLI instead of a third-party action, so no outside code
       # runs with write access to the repository.
       - name: Create GitHub Release
@@ -180,5 +195,5 @@ jobs:
           if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" release/* --clobber --repo "$GITHUB_REPOSITORY"
           else
-            gh release create "$GITHUB_REF_NAME" release/* --generate-notes --title "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY"
+            gh release create "$GITHUB_REF_NAME" release/* --notes-file notes.md --title "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY"
           fi
